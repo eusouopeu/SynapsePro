@@ -37,6 +37,7 @@ PlanItemState = Literal["Not Started", "Running", "Paused", "Done"]
 
 class PlanItemConfig(TypedDict):
     target_seconds: int
+    deck_id: Optional[int]  # optional: opens/reviews this deck when the item is clicked
 
 class PlanItemStatus(TypedDict):
     state: PlanItemState
@@ -127,6 +128,12 @@ class LearningPlanManager:
                 continue
             cfg = dict(cfg)
             cfg["target_seconds"] = int(target)
+            deck_id = cfg.get("deck_id")
+            cfg["deck_id"] = (
+                int(deck_id)
+                if isinstance(deck_id, (int, float)) and not isinstance(deck_id, bool)
+                else None
+            )
             subject_name = str(subject).strip()[:120]
             if subject_name:
                 clean[subject_name] = cfg
@@ -208,7 +215,8 @@ class LearningPlanManager:
                 "target_seconds": target_seconds,
                 "state": effective_state,
                 "elapsed_seconds": current_elapsed,
-                "start_timestamp": status["start_timestamp"]
+                "start_timestamp": status["start_timestamp"],
+                "deck_id": config.get("deck_id"),
             }
             display_list.append(item_to_display)
         

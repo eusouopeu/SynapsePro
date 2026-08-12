@@ -90,8 +90,10 @@ def _build_mini_chart():
     """Inline-SVG sparkline: reviews per day, last CHART_DAYS days.
 
     The y-axis is relative to the window: the best day in the window is 100%,
-    a day with no reviews sits on the baseline. Native per-day tooltips via
-    invisible full-height hover rects (hit target ≫ mark).
+    a day with no reviews sits on the baseline. Includes x-axis day-of-month
+    tick labels and a custom follow-cursor tooltip (invisible full-height
+    hover rects as hit targets, hit target ≫ mark) showing the exact date
+    and review count for the hovered day.
     """
     today = anki_today()
     counts = get_daily_review_counts(since_days=CHART_DAYS + 2)
@@ -140,16 +142,23 @@ def _build_mini_chart():
         f'stroke="var(--gray)" stroke-width="1" vector-effect="non-scaling-stroke"/>'
     )
 
+    # Invisible full-height hit-target rects; the exact value is shown in a
+    # custom follow-cursor tooltip (built below) rather than a native <title>,
+    # so it can be positioned precisely above the hovered point.
     hover = []
+    points_js = []
     for i, (d, v) in enumerate(zip(days, values)):
         hover.append(
-            f'<rect x="{i * step - step / 2:.1f}" y="0" width="{step:.1f}" '
-            f'height="{H:.0f}" fill="transparent">'
-            f'<title>{d.strftime("%d.%m.%Y")}: {v}</title></rect>'
+            f'<rect class="spark-hit" data-i="{i}" x="{i * step - step / 2:.1f}" '
+            f'y="0" width="{step:.1f}" height="{H:.0f}" fill="transparent"/>'
+        )
+        label = d.strftime("%d.%m.%Y")
+        points_js.append(
+            f'{{"x":{pts[i][0]:.1f},"y":{pts[i][1]:.1f},"label":"{label}","value":{v}}}'
         )
 
     last = pts[-1]
-    return (
+    svg = (
         f'<svg class="spark" viewBox="0 0 {W:.0f} {H:.0f}" '
         f'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">'
         f'{axes}'
@@ -160,6 +169,49 @@ def _build_mini_chart():
         f'{"".join(hover)}'
         f'</svg>'
     )
+
+    # 4 evenly spaced x-axis tick labels (day-of-month): start, ~1/3, ~2/3, end.
+    tick_positions = sorted({0, (CHART_DAYS - 1) // 3, (2 * (CHART_DAYS - 1)) // 3, CHART_DAYS - 1})
+    axis_labels_html = "".join(f'<span>{days[i].day}</span>' for i in tick_positions)
+    axis_html = f'<div class="spark-axis-labels">{axis_labels_html}</div>'
+
+    tooltip_html = '<div class="spark-tooltip"></div>'
+
+    script = f"""
+    <script>
+    (function() {{
+        var pts = [{','.join(points_js)}];
+        var root = document.currentScript.parentElement;
+        var svgEl = root.querySelector('svg.spark');
+        var tip = root.querySelector('.spark-tooltip');
+        if (!svgEl || !tip) return;
+
+        function showTip(i) {{
+            var p = pts[i];
+            if (!p) return;
+            var rect = svgEl.getBoundingClientRect();
+            var rootRect = root.getBoundingClientRect();
+            var left = (rect.left - rootRect.left) + (p.x / {W:.1f}) * rect.width;
+            var top = (rect.top - rootRect.top) + (p.y / {H:.1f}) * rect.height;
+            tip.textContent = p.label + ': ' + p.value;
+            tip.style.left = left + 'px';
+            tip.style.top = top + 'px';
+            tip.style.opacity = '1';
+        }}
+        function hideTip() {{ tip.style.opacity = '0'; }}
+
+        var hits = root.querySelectorAll('.spark-hit');
+        for (var i = 0; i < hits.length; i++) {{
+            hits[i].addEventListener('mousemove', (function(idx) {{
+                return function() {{ showTip(idx); }};
+            }})(i));
+        }}
+        root.addEventListener('mouseleave', hideTip);
+    }})();
+    </script>
+    """
+
+    return svg + axis_html + tooltip_html + script
 
 
 def get_statistics_data(stats_days=7):
@@ -226,10 +278,11 @@ def get_statistics_data(stats_days=7):
     result = {
         "chart_html": chart_html,
         "efficiency_raw": efficiency_bar_percent_raw,
+        "efficiency_cards_per_min": efficiency_score,
         "accuracy_raw": accuracy_percent,
         "retention_percent": retention_percent,
         "new_cards_percent": new_cards_percent,
-        "days_scope": stats_days 
+        "days_scope": stats_days
     }
     _statistics_cache[stats_days] = (time.monotonic(), result)
     return result
@@ -312,6 +365,7 @@ def render_widget_html_internal(stats):
 
     eff_raw = stats['efficiency_raw']
     eff_visual = min(100, eff_raw)
+    eff_cards_per_min = stats.get('efficiency_cards_per_min', 0)
     
     MAIN_BLUE = _palette(is_night_mode)["blue"]
     
@@ -332,7 +386,7 @@ def render_widget_html_internal(stats):
     label_eff_short = _("Eff.")
     label_acc_short = _("Acc.")
     label_retention = _("Retention")
-    label_new_cards = _("New Cards")
+    label_new_cards = _("Unstudied Cards")
 
 
     _cl = _palette(False)
@@ -420,11 +474,38 @@ def render_widget_html_internal(stats):
         .spark-wrap {{
             width: 100%;
             line-height: 0;
+            position: relative;
         }}
         .spark {{
             width: 100%;
             height: 62px;
             display: block;
+        }}
+        .spark-axis-labels {{
+            display: flex;
+            justify-content: space-between;
+            line-height: normal;
+            font-size: 10px;
+            color: var(--text-color-light);
+            margin-top: 2px;
+            padding: 0 1px;
+        }}
+        .spark-tooltip {{
+            position: absolute;
+            transform: translate(-50%, -130%);
+            background-color: var(--stat-bg);
+            border: 1px solid var(--stat-border);
+            color: var(--text-color);
+            font-size: 11px;
+            line-height: normal;
+            padding: 3px 6px;
+            border-radius: 4px;
+            white-space: nowrap;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.1s ease;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+            z-index: 5;
         }}
 
         .progress-row {{
@@ -433,7 +514,8 @@ def render_widget_html_internal(stats):
             gap: 8px;
         }}
         .progress-row .label {{
-            width: 30px;
+            width: 46px;
+            flex-shrink: 0;
         }}
         .progress-bar-bg {{
             flex-grow: 1;
@@ -446,6 +528,14 @@ def render_widget_html_internal(stats):
             height: 100%;
             border-radius: 6px;
             transition: width 0.5s ease-out;
+        }}
+        .progress-row .value {{
+            width: 44px;
+            flex-shrink: 0;
+            text-align: right;
+            font-size: 12px;
+            color: var(--text-color-light);
+            white-space: nowrap;
         }}
         .single-circle-stat {{
             display: flex;
@@ -512,6 +602,7 @@ def render_widget_html_internal(stats):
                 <div class="progress-bar-bg">
                     <div class="progress-bar-fill" style="width: {eff_visual:.1f}%; background-color: {efficiency_color};"></div>
                 </div>
+                <span class="value">{eff_cards_per_min:.1f}/min</span>
             </div>
 
             <div class="progress-row" title="{tooltip_accuracy}">
@@ -519,6 +610,7 @@ def render_widget_html_internal(stats):
                 <div class="progress-bar-bg">
                     <div class="progress-bar-fill" style="width: {acc_visual:.1f}%; background-color: {accuracy_color};"></div>
                 </div>
+                <span class="value">{acc_real:.0f}%</span>
             </div>
         </div>
 
@@ -586,7 +678,7 @@ def show_statistics_info_dialog(parent=None, stats_days=7):
          _("The percentage of correct answers on review cards ({}) — cards "
            "you had already learned. This shows how well you retain content "
            "long-term.").format(period_text)),
-        (_("New Cards"),
+        (_("Unstudied Cards"),
          _("The percentage of cards in your active collection that you have "
            "never studied.")),
     ]

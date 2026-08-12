@@ -385,6 +385,7 @@ def render_minimal_dashboard_sections(
       .sp-min-chart {{
         min-width: 0; min-height: 84px; padding: 8px 10px; box-sizing: border-box;
         border: 1px solid var(--sp-min-border); border-radius: 8px;
+        position: relative;
       }}
       .sp-min-chart-head {{ display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }}
       .sp-min-chart-scope {{ color: var(--sp-min-muted); font-size: 10px; white-space: nowrap; }}
