@@ -4,6 +4,7 @@ import json
 import random
 import os
 import time
+import base64
 from datetime import date, datetime, timedelta
 import traceback
 from typing import Union, List, Dict, Optional, Any
@@ -213,6 +214,26 @@ def calculate_streak_from_revlog() -> int:
         return 0
 
 
+_settings_icon_data_uri_cache: Optional[str] = None
+
+
+def _get_settings_icon_data_uri() -> str:
+    """Base64 data URI for media/settings.svg, used by the challenge-config
+    gear icon (same source icon as the launcher's settings button)."""
+    global _settings_icon_data_uri_cache
+    if _settings_icon_data_uri_cache is not None:
+        return _settings_icon_data_uri_cache
+    try:
+        icons = getattr(constants, 'icons_folder', '')
+        path = os.path.join(icons, "settings.svg")
+        with open(path, "rb") as f:
+            svg_bytes = f.read()
+        _settings_icon_data_uri_cache = f"data:image/svg+xml;base64,{base64.b64encode(svg_bytes).decode('utf-8')}"
+    except Exception:
+        _settings_icon_data_uri_cache = ""
+    return _settings_icon_data_uri_cache
+
+
 class GamificationManager:
     """Handles all gamification logic: XP, levels, ranks, streaks, challenges."""
 
@@ -241,7 +262,12 @@ class GamificationManager:
         yest = int((_anki_today() - timedelta(days=1)).strftime("%Y%m%d"))
         return {"level": 1, "xp": 0, "streak": 0, "last_login_day": 0,
                 "last_time_xp_check_day": yest, "current_challenge_id": None,
-                "challenge_completed_day": 0, "version": 4}
+                "challenge_completed_day": 0,
+                # mode: "random" (default) | "fixed" | "weekday".
+                # fixed_index: DAILY_CHALLENGES index used every day in "fixed" mode.
+                # weekday: {"0".."6" (Mon-Sun): DAILY_CHALLENGES index or absent -> random}.
+                "challenge_config": {"mode": "random", "fixed_index": None, "weekday": {}},
+                "version": 5}
 
     # ------------------------------------------------------------------
     # JSON backup helpers (resilient against Anki schema upgrades that
@@ -534,11 +560,27 @@ class GamificationManager:
             self.save_data()
         return data_changed
 
+    def _pick_challenge_index(self) -> int:
+        """Choose today's challenge index per the user's challenge_config."""
+        cfg = self.data.get("challenge_config") or {}
+        mode = cfg.get("mode", "random")
+        if mode == "fixed":
+            idx = cfg.get("fixed_index")
+            if isinstance(idx, int) and 0 <= idx < len(DAILY_CHALLENGES):
+                return idx
+        elif mode == "weekday":
+            weekday_key = str(_anki_today().weekday())
+            idx = (cfg.get("weekday") or {}).get(weekday_key)
+            if isinstance(idx, int) and 0 <= idx < len(DAILY_CHALLENGES):
+                return idx
+        # "random" mode, or fixed/weekday without a valid choice for today.
+        return random.randrange(len(DAILY_CHALLENGES))
+
     def assign_new_daily_challenge(self):
         if not DAILY_CHALLENGES: return
         self._challenge_progress_cache = None
         self.data["challenge_completed_day"] = 0
-        challenge_index = random.randrange(len(DAILY_CHALLENGES))
+        challenge_index = self._pick_challenge_index()
         self.data["current_challenge_id"] = challenge_index
         try:
             self._todays_challenge = DAILY_CHALLENGES[challenge_index]
@@ -586,6 +628,17 @@ class GamificationManager:
                  + timedelta(hours=self._get_rollover_hour()))
         return int(start.timestamp() * 1000)
 
+    def get_reviews_today_count(self) -> int:
+        """Number of cards reviewed since the start of the current Anki day."""
+        if not mw or not mw.col:
+            return 0
+        try:
+            start_ms = self._day_start_ms()
+            return mw.col.db.scalar(
+                "SELECT COUNT(*) FROM revlog WHERE id >= ? AND ease > 0", start_ms) or 0
+        except Exception:
+            return 0
+
     def get_challenge_progress(self) -> tuple[int, int]:
         """Return (current, target) for today's challenge, measured from revlog."""
         challenge = self._get_valid_challenge()
@@ -598,15 +651,14 @@ class GamificationManager:
             self.data.get("current_challenge_id"), ctype, target, start_ms)
         cached = self._challenge_progress_cache
         now = time.monotonic()
-        # render_widgets_html() and get_celebration_events() ask for the same
-        # value back-to-back during one dashboard render. Coalesce only that
-        # tiny burst; review boundaries explicitly invalidate the cache.
+        # render_widget_fragments() and get_celebration_events() ask for the
+        # same value back-to-back during one dashboard render. Coalesce only
+        # that tiny burst; review boundaries explicitly invalidate the cache.
         if cached and cached[0] == cache_key and now - cached[1] <= 0.5:
             return cached[2]
         try:
             if ctype == "reviews":
-                current = mw.col.db.scalar(
-                    "SELECT COUNT(*) FROM revlog WHERE id >= ? AND ease > 0", start_ms) or 0
+                current = self.get_reviews_today_count()
             elif ctype == "new_cards":
                 # Cards that had a learning-step review today (revlog type 0).
                 current = mw.col.db.scalar(
@@ -813,9 +865,12 @@ class GamificationManager:
         showInfo(_("{} data reset.").format(ADDON_NAME))
         return True
 
-    def render_widgets_html(self) -> str:
+    def render_widget_fragments(self) -> Dict[str, str]:
         """
-        Generiert das vollständige HTML und CSS für die Gamification-Widgets.
+        Builds each gamification widget card (level, streak, challenge,
+        next-level, reviews-today) as a standalone HTML fragment, plus the
+        shared CSS block they all depend on, so the caller can arrange them
+        in a custom grid layout instead of a fixed flex row.
         """
         lvl = self.get_level()
         rank = _(self.get_rank_name())
@@ -948,7 +1003,27 @@ class GamificationManager:
             f'</div>'
         )
 
-        chall_wid = f'''<div class="gamewidget challenge-widget" style="flex:1 1 300px; min-width:0; flex-direction:row; align-items:center; gap:12px;">
+        settings_icon_uri = _get_settings_icon_data_uri()
+        challenge_gear_tip = _("Configure Daily Challenge")
+        if settings_icon_uri:
+            challenge_gear = (
+                f'<img src="{settings_icon_uri}" title="{challenge_gear_tip}" '
+                f'onclick="event.stopPropagation(); pycmd(\'pycmd:synapsepro:challenge_settings\')" '
+                f'style="position:absolute; top:10px; right:10px; width:15px; height:15px; '
+                f'opacity:0.55; cursor:pointer; transition:opacity 0.2s ease;" '
+                f'onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.55">'
+            )
+        else:
+            challenge_gear = (
+                f'<span title="{challenge_gear_tip}" '
+                f'onclick="event.stopPropagation(); pycmd(\'pycmd:synapsepro:challenge_settings\')" '
+                f'style="position:absolute; top:6px; right:8px; font-size:13px; '
+                f'opacity:0.55; cursor:pointer; user-select:none;" '
+                f'onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.55">⚙</span>'
+            )
+
+        chall_wid = f'''<div class="gamewidget challenge-widget" style="flex:1 1 300px; min-width:0; flex-direction:row; align-items:center; gap:12px; padding-right:28px;">
+                          {challenge_gear}
                           <div style="flex:1 1 auto; min-width:0;">
                             <h5 style="{title_style_gam.replace("margin:0 0 5px 0;", "margin:0;")}">{label_daily_challenge}</h5>
                             <p style="{challenge_text_style}">{chall_txt}</p>
@@ -960,10 +1035,20 @@ class GamificationManager:
         prog_bar_title = label_max_reached_tpl.format(xp_current_str) if needed == float('inf') else f"{xp_current_str} / {needed_str} XP"
         prog_bar=f'<div class="progress-bar-outer" style="width:100%; height:{bar_h}; background-color: var(--progress-bg); border-radius:{bar_h}; overflow:hidden; margin-top:8px;" title="{prog_bar_title}"><div class="progress-bar-inner" style="height:100%; width:{prog}%; background-color: var(--primary-blue); border-radius:{bar_h}; transition:width 0.3s ease-out;"></div></div>'
 
-        next_lvl_wid=f'<div class="gamewidget next-level-widget" style="flex:0 1 280px; min-width:190px;"><div style="display:flex; justify-content:space-between; align-items:baseline; width:100%;"><h5 style="{title_style_gam}">{label_next_level}</h5><span style="{sec_style_gam}">{label_remaining_tpl.format(rem_xp_disp)}</span></div>{prog_bar}</div>'
-        
-        gamification_container_style = f""" display: flex; justify-content: center; align-items: stretch; flex-wrap: nowrap; gap: {gap}; max-width: {WIDGET_CONTAINER_MAX_WIDTH}; margin: 0 auto {margin_b} auto; padding: 0 10px; box-sizing: border-box; """
-        
-        html = f'<div id="gamification-widgets-container" style="{gamification_container_style}">{lvl_wid}{strk_wid}{chall_wid}{next_lvl_wid}</div>'
+        next_lvl_wid=f'<div class="gamewidget next-level-widget" style="flex:0 1 280px; min-width:190px; width:100%; height:100%; box-sizing:border-box;"><div style="display:flex; justify-content:space-between; align-items:baseline; width:100%;"><h5 style="{title_style_gam}">{label_next_level}</h5><span style="{sec_style_gam}">{label_remaining_tpl.format(rem_xp_disp)}</span></div>{prog_bar}</div>'
 
-        return css + html
+        reviews_today = self.get_reviews_today_count()
+        label_reviews_today = _("Reviewed Today")
+        reviews_today_wid = f'''<div class="gamewidget reviews-today-widget" style="text-align:center; width:100%; height:100%; box-sizing:border-box; justify-content:center; align-items:center;">
+                        <h5 style="{title_style_gam}">{label_reviews_today}</h5>
+                        <p style="font-size:1.5em; font-weight:bold; color: var(--primary-blue); margin:0;">{reviews_today}</p>
+                    </div>'''
+
+        return {
+            "css": css,
+            "level": lvl_wid,
+            "streak": strk_wid,
+            "challenge": chall_wid,
+            "next_level": next_lvl_wid,
+            "reviews_today": reviews_today_wid,
+        }

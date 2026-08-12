@@ -76,7 +76,7 @@ try:
     from .sidebar import GamificationSidebar
     from .learning_plan import LearningPlanManager
     from .deadline_bar import DeadlineManager
-    from .configuration import LearningPlanConfigDialog, StudyPlanViewerDialog, DeadlineViewerDialog, DeadlineConfigDialog
+    from .configuration import LearningPlanConfigDialog, StudyPlanViewerDialog, DeadlineViewerDialog, DeadlineConfigDialog, ChallengeConfigDialog
     modules_loaded = True
 except Exception as e:
     print(f"SynapsePro1: ERROR - Failed to import sub-modules: {e}")
@@ -1128,6 +1128,39 @@ def on_profile_close():
         if hasattr(mw, attr): delattr(mw, attr)
 
 # --- Webview & Rendering Hooks ---
+def _render_unified_widgets_panel(gm, lpm) -> str:
+    """Combine the gamification cards and the Study Plan card into one CSS
+    grid so the Study Plan card can span both rows. The two source modules
+    used to render as independent flex rows stacked on top of each other,
+    which cannot express a cell shared between them.
+
+    Layout (4 columns x 2 rows):
+      Row 1: Study Plan (rowspan 2) | Streak | Level | Next Level
+      Row 2: Study Plan (cont.)     | Reviewed Today  | Daily Challenge (2 cols)
+    """
+    fragments = gm.render_widget_fragments()
+    plan_css = daily_widgets.get_plan_widget_css()
+    plan_html = daily_widgets.generate_learning_plan_widget(
+        lpm.get_plan_for_display(), grid_mode=True)
+
+    container_style = (
+        "display: grid; "
+        "grid-template-columns: minmax(200px, 1.3fr) repeat(3, minmax(120px, 1fr)); "
+        "grid-template-rows: auto auto; gap: 15px; max-width: 880px; "
+        "margin: 0 auto 15px auto; padding: 0 10px; box-sizing: border-box; "
+        "align-items: stretch;"
+    )
+    cells = "".join([
+        f'<div style="grid-column:2; grid-row:1;">{fragments["streak"]}</div>',
+        f'<div style="grid-column:3; grid-row:1;">{fragments["level"]}</div>',
+        f'<div style="grid-column:4; grid-row:1;">{fragments["next_level"]}</div>',
+        f'<div style="grid-column:2; grid-row:2;">{fragments["reviews_today"]}</div>',
+        f'<div style="grid-column:3 / span 2; grid-row:2;">{fragments["challenge"]}</div>',
+    ])
+    html = f'<div id="unified-widgets-grid" style="{container_style}">{plan_html}{cells}</div>'
+    return fragments["css"] + plan_css + html
+
+
 def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrowserContent):
     global _dashboard_rendered_with_models
     minimal_enabled = bool(addon_settings.get("minimal_dashboard_enabled", False))
@@ -1139,7 +1172,7 @@ def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrow
         _dashboard_rendered_with_models = True
         return
     
-    stats_html = gamification_html = daily_html = deadline_html = compact_html = compact_stats_html = ""
+    stats_html = widgets_panel_html = deadline_html = compact_html = compact_stats_html = ""
     gm = getattr(mw, 'gamification_manager', None)
     lpm = getattr(mw, 'learning_plan_manager', None)
     dm = getattr(mw, 'deadline_manager', None)
@@ -1164,12 +1197,36 @@ def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrow
         if addon_settings.get("statistics_widget_enabled", True):
             try: stats_html = statistics_widget.render_statistics_widget_html(stats_days=int(addon_settings.get("stats_time_range", 7)))
             except Exception as e: print(f"SynapsePro: stats widget render error: {e}")
-        if addon_settings.get("gamification_widgets_enabled", True) and gm:
-            try: gamification_html = gm.render_widgets_html()
-            except Exception as e: print(f"SynapsePro: gamification widget render error: {e}")
-        if addon_settings.get("daily_widgets_enabled", True) and lpm:
-            try: daily_html = daily_widgets.generate_daily_widgets_html(lpm.get_plan_for_display(), addon_settings.get("fact_theme", "Medical"))
-            except Exception as e: print(f"SynapsePro: daily widget render error: {e}")
+
+        gam_enabled = bool(addon_settings.get("gamification_widgets_enabled", True) and gm)
+        plan_enabled = bool(addon_settings.get("daily_widgets_enabled", True) and lpm)
+        if gam_enabled and plan_enabled:
+            # Common case: both sections on -> one unified grid with the Study
+            # Plan card spanning both rows (see _render_unified_widgets_panel).
+            try: widgets_panel_html = _render_unified_widgets_panel(gm, lpm)
+            except Exception as e: print(f"SynapsePro: widgets panel render error: {e}")
+        else:
+            # Either section can be toggled off independently in Settings; fall
+            # back to simple standalone rendering rather than a grid designed
+            # around both being present.
+            if gam_enabled:
+                try:
+                    frag = gm.render_widget_fragments()
+                    row_style = ("display:flex; flex-wrap:wrap; align-items:stretch; gap:15px; "
+                                 "max-width:880px; margin:0 auto 15px auto; padding:0 10px; box-sizing:border-box;")
+                    widgets_panel_html += (
+                        frag["css"] + f'<div style="{row_style}">'
+                        f'{frag["level"]}{frag["streak"]}{frag["challenge"]}'
+                        f'{frag["next_level"]}{frag["reviews_today"]}</div>'
+                    )
+                except Exception as e: print(f"SynapsePro: gamification widget render error: {e}")
+            if plan_enabled:
+                try:
+                    widgets_panel_html += (
+                        daily_widgets.get_plan_widget_css()
+                        + daily_widgets.generate_learning_plan_widget(lpm.get_plan_for_display())
+                    )
+                except Exception as e: print(f"SynapsePro: daily widget render error: {e}")
         if addon_settings.get("deadline_bar_enabled", True) and dm:
             try: deadline_html = dm.render_deadline_bar_html()
             except Exception as e: print(f"SynapsePro: deadline bar render error: {e}")
@@ -1189,8 +1246,15 @@ def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrow
     except Exception as e:
         print(f"SynapsePro: celebration popup error: {e}")
 
-    content.stats = compact_stats_html + stats_html + celebrate_html + getattr(content, 'stats', '')
-    content.tree = compact_html + gamification_html + daily_html + deadline_html + getattr(content, 'tree', '')
+    # Stats panel first, then the widgets panel, then Anki's own deck list —
+    # both injected sections live in content.tree since Anki renders that
+    # near the top of the page and content.stats near the bottom.
+    content.stats = celebrate_html + getattr(content, 'stats', '')
+    content.tree = (
+        compact_stats_html + stats_html
+        + compact_html + widgets_panel_html + deadline_html
+        + getattr(content, 'tree', '')
+    )
 
 # --- Study-plan countdown timers ------------------------------------------------
 # Fire a "time's up" notification when a subject's timer runs out — even while the
@@ -1241,6 +1305,16 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
         try: _handle_plan_timer(cmd)
         except Exception as e: print(f"SynapsePro plan timer error: {e}")
         return (True, None)
+    if cmd.startswith("synapsepro:planOpenDeck:"):
+        try:
+            deck_id = int(cmd.split(":", 2)[2])
+            if mw.col.decks.get(deck_id, default=False):
+                mw.col.decks.select(deck_id)
+                mw.col.startTimebox()
+                mw.moveToState("review")
+        except Exception as e:
+            print(f"SynapsePro: plan deck-open error: {e}")
+        return (True, None)
     if cmd == CMD_RESET_DATA:
         gm = getattr(mw, 'gamification_manager', None)
         if gm and gm.reset_all_data() and gamification_sidebar: gamification_sidebar.update_display()
@@ -1254,6 +1328,16 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
                     gamification_sidebar.update_display()
             except Exception as e:
                 print(f"SynapsePro: claim challenge error: {e}")
+        return (True, None)
+    if cmd == "synapsepro:challenge_settings":
+        gm = getattr(mw, 'gamification_manager', None)
+        if gm:
+            try:
+                ChallengeConfigDialog(gm, parent=mw).exec()
+            except Exception as e:
+                print(f"SynapsePro: ChallengeConfigDialog error: {e}")
+        if mw.state == "deckBrowser":
+            mw.deckBrowser.refresh()
         return (True, None)
     # ── Multi-deadline navigation & viewer ───────────────────────────────
     if cmd in ("synapsepro:deadline_next", "synapsepro:deadline_viewer", "synapsepro:deadline_settings"):

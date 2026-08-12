@@ -85,10 +85,6 @@ def _image_data_uri(path: str, mtime_ns: int, size: int) -> str:
             f"data:{IMAGE_MIME_TYPE};base64,"
             f"{base64.b64encode(image_file.read()).decode('utf-8')}"
         )
-DAILY_WIDGETS_GAP = "15px"
-DAILY_WIDGETS_MARGIN_BOTTOM = "15px"
-DAILY_WIDGETS_MAX_WIDTH = "880px"
-
 # --- Medizinische Fakten Liste ---
 MEDICAL_FACTS = [
     {"text": "Did you know? Your brain consumes a significant amount of energy, about 20% of your body's total supply, despite only accounting for roughly 2% of your total body weight.", "image": "brain_energy.png"},
@@ -241,7 +237,7 @@ def format_seconds(seconds: float) -> str:
 
 # --- Widget generators ---
 
-def generate_learning_plan_widget(plan_data: List[Dict]) -> str:
+def generate_learning_plan_widget(plan_data: List[Dict], *, grid_mode: bool = False) -> str:
     base_style = get_base_widget_style()
     main_title_style = get_widget_title_style(margin_bottom="0")
     widget_title = _("Study Plan")
@@ -475,6 +471,11 @@ def generate_learning_plan_widget(plan_data: List[Dict]) -> str:
                         saveState(state);
                         notifyTimerStart(subject, duration - (state[key].elapsedTime || 0));
                         updateTimers();
+                        // Subjects linked to a deck also jump straight into
+                        // that deck's review session when the timer starts.
+                        if (element.dataset.deckId && window.pycmd) {{
+                            window.pycmd("pycmd:synapsepro:planOpenDeck:" + element.dataset.deckId);
+                        }}
                     }}
                 }};
 
@@ -589,8 +590,15 @@ def generate_learning_plan_widget(plan_data: List[Dict]) -> str:
             if i == len(plan_data) - 1:
                 current_row_style = current_row_style.replace(f"margin-bottom:{row_margin_bottom};", "")
 
+            deck_id = item.get('deck_id')
+            deck_id_attr = (
+                str(int(deck_id))
+                if isinstance(deck_id, (int, float)) and not isinstance(deck_id, bool)
+                else ""
+            )
+
             onclick_handler = "handlePlanClick(this)"
-            data_attributes = f'data-subject="{subject_safe}" data-seconds="{target_seconds}" data-original-bg="{adjusted_bg_color}" data-initial-text="{time_display_text}"'
+            data_attributes = f'data-subject="{subject_safe}" data-seconds="{target_seconds}" data-original-bg="{adjusted_bg_color}" data-initial-text="{time_display_text}" data-deck-id="{deck_id_attr}"'
 
             rows_content += f'''
             <div id="{row_id}" class="plan-row-item" style="{current_row_style}" {data_attributes} onclick="{onclick_handler}">
@@ -601,7 +609,10 @@ def generate_learning_plan_widget(plan_data: List[Dict]) -> str:
 
         rows_html = f'<div style="{rows_container_style}">{rows_content}{modal_html}</div>'
 
-    widget_style = f"{base_style} flex: {PLAN_WIDGET_FLEX_GROW} {PLAN_WIDGET_FLEX_SHRINK} {PLAN_WIDGET_FLEX_BASIS}; max-width: {PLAN_WIDGET_MAX_WIDTH}; min-width: 200px; min-height: 100px; display: flex; flex-direction: column; justify-content: flex-start;"
+    if grid_mode:
+        widget_style = f"{base_style} grid-column: 1; grid-row: 1 / span 2; width: 100%; height: 100%; min-height: 0; box-sizing: border-box; display: flex; flex-direction: column; justify-content: flex-start; overflow-y: auto;"
+    else:
+        widget_style = f"{base_style} flex: {PLAN_WIDGET_FLEX_GROW} {PLAN_WIDGET_FLEX_SHRINK} {PLAN_WIDGET_FLEX_BASIS}; max-width: {PLAN_WIDGET_MAX_WIDTH}; min-width: 200px; min-height: 100px; display: flex; flex-direction: column; justify-content: flex-start;"
     widget_html = f'''<div class="daily-widget plan-widget" style="{widget_style}">{header_html}{rows_html}</div>'''
     return widget_html
 
@@ -705,10 +716,16 @@ def generate_fact_widget(fact_theme: str = "Medical") -> str:
     return widget_html
 
 # --- Entry point ---
-def generate_daily_widgets_html(learning_plan_data: List[Dict], fact_theme: str) -> str:
+def get_plan_widget_css() -> str:
+    """Shared :root/night-mode CSS variables the plan widget relies on.
+
+    Split out so callers assembling a custom layout (e.g. the unified
+    widgets grid in __init__.py) can include it once alongside the widget
+    fragment, without needing the old flex-row container this used to ship.
+    """
     _cl = _palette(False)
     _cd = _palette(True)
-    css_styles = f"""
+    return f"""
     <style>
         :root {{
             --stat-bg: {_cl["surface"]};
@@ -732,19 +749,3 @@ def generate_daily_widgets_html(learning_plan_data: List[Dict], fact_theme: str)
         }}
     </style>
     """
-
-    plan_widget_html = ""; fact_widget_html = ""
-    try: plan_widget_html = generate_learning_plan_widget(learning_plan_data)
-    except Exception as e: print(f"ERROR generating plan widget: {e}"); traceback.print_exc(); plan_widget_html = "<!-- Error -->"
-    try: fact_widget_html = generate_fact_widget(fact_theme)
-    except Exception as e: print(f"ERROR generating fact widget: {e}"); traceback.print_exc(); fact_widget_html = "<!-- Error -->"
-
-    container_style = f"""
-        display: flex; align-items: flex-start; flex-wrap: wrap;
-        gap: {DAILY_WIDGETS_GAP}; max-width: {DAILY_WIDGETS_MAX_WIDTH};
-        margin: 0 auto {DAILY_WIDGETS_MARGIN_BOTTOM} auto;
-        padding: 0 10px; box-sizing: border-box;
-    """
-    container_html = f'''<div id="daily-widgets-container" style="{container_style}">{plan_widget_html}{fact_widget_html}</div>'''
-
-    return css_styles + container_html

@@ -53,7 +53,8 @@ THEME_INDEX_TO_NAME = {
 
 # ── Role → Fact-category mapping ──────────────────────────────────────────────
 # Maps the data-value of the selected role button to the fact_theme key
-# used by daily_widgets.generate_daily_widgets_html().
+# used by daily_widgets.generate_fact_widget() (minimal dashboard only —
+# the full dashboard's fact-of-the-day card was removed).
 ROLE_TO_FACT_THEME = {
     "medical":    "Medical",
     "law":        "Law",

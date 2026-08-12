@@ -149,7 +149,8 @@ class DeadlineManager:
         except Exception:
             return list(deadlines)
 
-    def add_deadline(self, name: str, start_date: str, end_date: str) -> Dict:
+    def add_deadline(self, name: str, start_date: str, end_date: str,
+                      deck_id: Optional[int] = None) -> Dict:
         start = datetime.strptime(start_date, self.DATE_FORMAT).date()
         end = datetime.strptime(end_date, self.DATE_FORMAT).date()
         if start > end:
@@ -159,6 +160,7 @@ class DeadlineManager:
             "name": name,
             "start_date": start_date,
             "end_date": end_date,
+            "deck_id": deck_id,
         }
         self.data.setdefault("deadlines", []).append(entry)
         self.save_data()
@@ -220,6 +222,18 @@ class DeadlineManager:
 
     # ── Progress Calculation ─────────────────────────────────────────────────
 
+    @staticmethod
+    def resolve_deck_name(deck_id) -> Optional[str]:
+        """Deck name for *deck_id*, "Removed deck" if it no longer exists,
+        or None if no deck is linked at all."""
+        if not isinstance(deck_id, (int, float)) or isinstance(deck_id, bool):
+            return None
+        try:
+            deck = mw.col.decks.get(int(deck_id), default=False)
+        except Exception:
+            deck = None
+        return deck["name"] if deck else _("Removed deck")
+
     def get_deadline_info(self) -> Optional[Dict]:
         if not self.data.get("enabled", False):
             return None
@@ -265,6 +279,7 @@ class DeadlineManager:
                 "title": title_display, "progress": progress,
                 "tooltip": tip, "days_remaining": days_remaining,
                 "deadline_id": info.get("id"),
+                "deck_name": self.resolve_deck_name(info.get("deck_id")),
             }
         except (ValueError, TypeError, KeyError) as e:
             return {"title": _("Deadline Error"), "progress": 0,
@@ -298,6 +313,7 @@ class DeadlineManager:
         tooltip_text   = progress_data.get("tooltip", "")
         days_remaining = progress_data.get("days_remaining")
         title          = progress_data.get("title", "")
+        deck_name      = progress_data.get("deck_name")
         config_icon    = self.get_icon_html_for_deck_browser()
 
         _cl = _palette(False)
@@ -357,6 +373,16 @@ class DeadlineManager:
                 overflow: hidden;
                 text-overflow: ellipsis;
             }}
+            .deadline-deck-tag {{
+                font-size: 11px;
+                color: #888;
+                white-space: nowrap;
+                flex-shrink: 0;
+                max-width: 120px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                opacity: 0.8;
+            }}
             .deadline-progress-bg {{
                 flex-grow: 1;
                 height: 12px;
@@ -390,6 +416,9 @@ class DeadlineManager:
         if days_remaining is not None:
             days_label_html = (f'<span class="deadline-days-label">{int(days_remaining)} '
                                f'{html.escape(_("Days"))}</span>')
+        deck_tag_html = ""
+        if deck_name:
+            deck_tag_html = f'<span class="deadline-deck-tag">{html.escape(str(deck_name))}</span>'
 
         # NOTE: keep this variable named anything but "html" — a local called
         # "html" would shadow the imported html module for the whole function
@@ -397,6 +426,7 @@ class DeadlineManager:
         bar_html = f"""
         <div class="deadline-bar-container" title="{tooltip_text}">
             <span class="deadline-title-label">{title}</span>
+            {deck_tag_html}
             {nav_html}
             <div class="deadline-progress-bg">
                 <div class="deadline-progress-fill" style="width: {progress}%;"></div>

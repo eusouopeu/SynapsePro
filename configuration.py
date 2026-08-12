@@ -19,7 +19,8 @@ from aqt.qt import (
     QFont, QColor, QPainter, QPen, QBrush, QRectF, QIcon, QToolButton,
     QTextEdit,
     QApplication,
-    QDesktopServices, QUrl
+    QDesktopServices, QUrl,
+    QComboBox, QRadioButton, QButtonGroup, QStackedWidget,
 )
 from aqt.utils import showInfo, tooltip
 
@@ -30,9 +31,10 @@ except ImportError:
     PlanItemConfig = Dict; LearningPlanManager = None
 
 try:
-    from .gamification import ADDON_NAME, GamificationManager
+    from .gamification import ADDON_NAME, GamificationManager, DAILY_CHALLENGES, CHALLENGE_TEXT_TEMPLATES
 except ImportError:
     ADDON_NAME = "GamificationPlusDailyWidgets_ConfigImportFailed"; GamificationManager = None
+    DAILY_CHALLENGES = []; CHALLENGE_TEXT_TEMPLATES = {}
 
 try:
     from .deadline_bar import DeadlineManager, DEADLINE_CONFIG_KEY
@@ -149,6 +151,25 @@ def _build_style(night: bool) -> str:
 """
 
 # Styles computed per-instance at widget creation time (not cached here).
+
+
+# ── Shared deck picker helpers (Study Plan + Deadline dialogs) ─────────────
+
+def _populate_deck_combo(combo: "QComboBox") -> None:
+    """Fill *combo* with a leading 'No deck' entry followed by every Anki deck."""
+    combo.clear()
+    combo.addItem(_("No deck"), None)
+    try:
+        for d in sorted(mw.col.decks.all_names_and_ids(), key=lambda x: x.name.lower()):
+            combo.addItem(d.name, d.id)
+    except Exception:
+        pass
+
+
+def _select_deck_combo(combo: "QComboBox", deck_id) -> None:
+    """Select *deck_id* in combo if present, otherwise fall back to 'No deck'."""
+    pos = combo.findData(deck_id) if deck_id is not None else -1
+    combo.setCurrentIndex(pos if pos >= 0 else 0)
 
 
 class StudyPlanCalendarWidget(QCalendarWidget):
@@ -552,7 +573,10 @@ class LearningPlanConfigDialog(QDialog):
         self.time_input = QTimeEdit(QTime(1, 0, 0))
         self.time_input.setDisplayFormat("hh:mm")
         self.time_input.setFixedWidth(80)
-        
+        self.deck_input = QComboBox()
+        _populate_deck_combo(self.deck_input)
+        self.deck_input.setMinimumWidth(140)
+
         self.add_button = QPushButton(_("Add"))
         self.add_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_button.clicked.connect(self.add_or_update_item_for_selected_date)
@@ -560,6 +584,8 @@ class LearningPlanConfigDialog(QDialog):
         input_layout.addWidget(self.subject_input)
         input_layout.addWidget(QLabel(_("Time:")))
         input_layout.addWidget(self.time_input)
+        input_layout.addWidget(QLabel(_("Deck:")))
+        input_layout.addWidget(self.deck_input)
         input_layout.addWidget(self.add_button)
         plan_layout.addLayout(input_layout)
 
@@ -723,7 +749,7 @@ class LearningPlanConfigDialog(QDialog):
         self.selected_date = self.calendar.selectedDate()
         self.selected_date_label.setText(f"Plan for: {self.selected_date.toString('dddd, MMM d, yyyy')}")
         self.load_plan_for_selected_date_into_table()
-        self.subject_input.clear(); self.time_input.setTime(QTime(1, 0))
+        self.subject_input.clear(); self.time_input.setTime(QTime(1, 0)); self.deck_input.setCurrentIndex(0)
         self.subject_input.setFocus(); self.table.clearSelection(); self.remove_button.setEnabled(False)
 
     def load_plan_for_selected_date_into_table(self):
@@ -743,8 +769,12 @@ class LearningPlanConfigDialog(QDialog):
 
     def load_selected_item_for_edit(self):
         if not (rows := self.table.selectionModel().selectedRows()): return
-        self.subject_input.setText(self.table.item(rows[0].row(), 0).text())
+        subject = self.table.item(rows[0].row(), 0).text()
+        self.subject_input.setText(subject)
         self.time_input.setTime(self._seconds_to_qtime(self.table.item(rows[0].row(), 1).data(Qt.ItemDataRole.UserRole)))
+        dk = self.selected_date.toString("yyyyMMdd")
+        cfg = self.current_full_plan.get(dk, {}).get(subject, {})
+        _select_deck_combo(self.deck_input, cfg.get("deck_id") if isinstance(cfg, dict) else None)
 
     def add_or_update_item_for_selected_date(self):
         sub = self.subject_input.text().strip(); sec = self._qtime_to_seconds(self.time_input.time())
@@ -752,9 +782,13 @@ class LearningPlanConfigDialog(QDialog):
         dk = self.selected_date.toString("yyyyMMdd")
         if dk not in self.current_full_plan or not isinstance(self.current_full_plan[dk], dict): self.current_full_plan[dk] = {}
         target = next((k for k in self.current_full_plan[dk] if k.lower() == sub.lower()), sub)
-        self.current_full_plan[dk][target] = {"target_seconds": sec}
+        deck_id = self.deck_input.currentData()
+        item: Dict = {"target_seconds": sec}
+        if deck_id is not None:
+            item["deck_id"] = deck_id
+        self.current_full_plan[dk][target] = item
         self.config_changed = True; self.load_plan_for_selected_date_into_table(); self.update_calendar_highlights()
-        self.subject_input.clear(); self.time_input.setTime(QTime(1, 0))
+        self.subject_input.clear(); self.time_input.setTime(QTime(1, 0)); self.deck_input.setCurrentIndex(0)
 
     def remove_item_from_selected_date(self):
         if not (rows := self.table.selectionModel().selectedRows()): return
@@ -1297,15 +1331,17 @@ class DeadlineConfigDialog(QDialog):
 
         # ── Table ────────────────────────────────────────────────────────
         self.table = QTableWidget()
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Name", "Start", "End", "Default"])
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Name", "Start", "End", "Default", _("Deck")])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(1, 100)
         self.table.setColumnWidth(2, 100)
         self.table.setColumnWidth(3, 60)
+        self.table.setColumnWidth(4, 130)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1333,6 +1369,9 @@ class DeadlineConfigDialog(QDialog):
         self.end_edit.setCalendarPopup(True)
         self.end_edit.setDisplayFormat("yyyy-MM-dd")
         self.end_edit.setFixedWidth(105)
+        self.deck_input = QComboBox()
+        _populate_deck_combo(self.deck_input)
+        self.deck_input.setMinimumWidth(120)
         add_btn = QPushButton(_("+ Add"))
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_btn.setFixedWidth(64)
@@ -1343,6 +1382,8 @@ class DeadlineConfigDialog(QDialog):
         add_layout.addWidget(self.start_edit)
         add_layout.addWidget(QLabel(_("End:")))
         add_layout.addWidget(self.end_edit)
+        add_layout.addWidget(QLabel(_("Deck:")))
+        add_layout.addWidget(self.deck_input)
         add_layout.addWidget(add_btn)
         layout.addWidget(add_frame)
 
@@ -1387,6 +1428,8 @@ class DeadlineConfigDialog(QDialog):
             self.table.setItem(row, 0, item0)
             self.table.setItem(row, 1, QTableWidgetItem(dl.get("start_date", "")))
             self.table.setItem(row, 2, QTableWidgetItem(dl.get("end_date", "")))
+            deck_name = DeadlineManager.resolve_deck_name(dl.get("deck_id")) if DeadlineManager else None
+            self.table.setItem(row, 4, QTableWidgetItem(deck_name or "—"))
             dl_id = dl.get("id")
             is_pinned = (dl_id == pinned_id)
             pin_cb = QCheckBox()
@@ -1419,8 +1462,10 @@ class DeadlineConfigDialog(QDialog):
             "name": name[:120],
             "start_date": self.start_edit.date().toString(Qt.DateFormat.ISODate),
             "end_date": self.end_edit.date().toString(Qt.DateFormat.ISODate),
+            "deck_id": self.deck_input.currentData(),
         })
         self.name_input.clear()
+        self.deck_input.setCurrentIndex(0)
         self._refresh_table()
 
     def _remove_deadline(self):
@@ -1444,6 +1489,147 @@ class DeadlineConfigDialog(QDialog):
             self._working_data["enabled"] = self.enabled_cb.isChecked()
             self.deadline_manager.data = copy.deepcopy(self._working_data)
             self.deadline_manager.save_data()
+        self.accept()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ChallengeConfigDialog — choose Random / Fixed / By-day-of-week daily challenge
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ChallengeConfigDialog(QDialog):
+    """Popup for choosing how the daily gamification challenge is picked."""
+
+    WEEKDAY_KEYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]  # index 0=Mon .. 6=Sun
+
+    def __init__(self, gamification_manager, parent=None):
+        super().__init__(parent)
+        self.gm = gamification_manager
+        # Edit a detached copy so Cancel/window-close cannot leak a partial
+        # selection into collection configuration.
+        self._working_config = copy.deepcopy(
+            (gamification_manager.data.get("challenge_config") if gamification_manager else None)
+            or {"mode": "random", "fixed_index": None, "weekday": {}}
+        )
+        self.setWindowTitle(_("Daily Challenge Settings"))
+        self.resize(480, 440)
+        self.setMinimumSize(420, 360)
+        self.setStyleSheet(_build_style(is_night_mode))
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        header = QLabel(_("Daily Challenge"))
+        header.setObjectName("HeaderLabel")
+        layout.addWidget(header)
+
+        # ── Mode radios ──────────────────────────────────────────────────
+        self.mode_group = QButtonGroup(self)
+        self.radio_random = QRadioButton(_("Random"))
+        self.radio_fixed = QRadioButton(_("Fixed"))
+        self.radio_weekday = QRadioButton(_("By Day of Week"))
+        for i, rb in enumerate((self.radio_random, self.radio_fixed, self.radio_weekday)):
+            rb.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.mode_group.addButton(rb, i)
+            layout.addWidget(rb)
+
+        # ── Stacked sub-panels, one per mode ────────────────────────────
+        self.stack = QStackedWidget()
+
+        random_page = QLabel(_("A new random challenge is picked automatically every day."))
+        random_page.setObjectName("SubLabel")
+        random_page.setWordWrap(True)
+        self.stack.addWidget(random_page)
+
+        fixed_page = QWidget()
+        fixed_layout = QVBoxLayout(fixed_page)
+        fixed_layout.setContentsMargins(0, 4, 0, 0)
+        fixed_hint = QLabel(_("Same challenge every day."))
+        fixed_hint.setObjectName("SubLabel")
+        fixed_layout.addWidget(fixed_hint)
+        self.fixed_combo = QComboBox()
+        self._populate_challenge_combo(self.fixed_combo, include_random=False)
+        fixed_layout.addWidget(self.fixed_combo)
+        fixed_layout.addStretch()
+        self.stack.addWidget(fixed_page)
+
+        weekday_page = QWidget()
+        weekday_layout = QFormLayout(weekday_page)
+        weekday_hint = QLabel(_('Pick a challenge for each day of the week. Days left as "Random" get a random challenge.'))
+        weekday_hint.setObjectName("SubLabel")
+        weekday_hint.setWordWrap(True)
+        weekday_layout.addRow(weekday_hint)
+        self.weekday_combos: List[QComboBox] = []
+        for key in self.WEEKDAY_KEYS:
+            combo = QComboBox()
+            self._populate_challenge_combo(combo, include_random=True)
+            self.weekday_combos.append(combo)
+            weekday_layout.addRow(_(key) + ":", combo)
+        self.stack.addWidget(weekday_page)
+
+        layout.addWidget(self.stack)
+        self.mode_group.idClicked.connect(self.stack.setCurrentIndex)
+        layout.addStretch()
+
+        # ── Bottom buttons ───────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton(_("Cancel"))
+        cancel_btn.setObjectName("SecondaryButton")
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        done_btn = QPushButton(_("Done"))
+        done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        done_btn.clicked.connect(self._save_and_close)
+        btn_row.addWidget(done_btn)
+        layout.addLayout(btn_row)
+
+        self._load_working_config()
+
+    def _populate_challenge_combo(self, combo: "QComboBox", include_random: bool):
+        if include_random:
+            combo.addItem(_("Random"), None)
+        for idx, challenge in enumerate(DAILY_CHALLENGES):
+            tpl = CHALLENGE_TEXT_TEMPLATES.get(challenge.get("type", ""), "")
+            text = _(tpl).format(challenge.get("target", 0)) if tpl else str(challenge)
+            combo.addItem(text, idx)
+
+    def _load_working_config(self):
+        mode = self._working_config.get("mode", "random")
+        mode_index = {"random": 0, "fixed": 1, "weekday": 2}.get(mode, 0)
+        button = self.mode_group.button(mode_index)
+        if button:
+            button.setChecked(True)
+        self.stack.setCurrentIndex(mode_index)
+
+        fixed_index = self._working_config.get("fixed_index")
+        if isinstance(fixed_index, int):
+            pos = self.fixed_combo.findData(fixed_index)
+            if pos >= 0:
+                self.fixed_combo.setCurrentIndex(pos)
+
+        weekday_cfg = self._working_config.get("weekday") or {}
+        for i, combo in enumerate(self.weekday_combos):
+            idx = weekday_cfg.get(str(i))
+            pos = combo.findData(idx) if isinstance(idx, int) else 0
+            combo.setCurrentIndex(pos if pos >= 0 else 0)
+
+    def _save_and_close(self):
+        if self.gm:
+            mode = {0: "random", 1: "fixed", 2: "weekday"}.get(self.mode_group.checkedId(), "random")
+            fixed_index = self.fixed_combo.currentData()
+            weekday = {}
+            for i, combo in enumerate(self.weekday_combos):
+                data = combo.currentData()
+                if isinstance(data, int):
+                    weekday[str(i)] = data
+            self.gm.data["challenge_config"] = {
+                "mode": mode,
+                "fixed_index": fixed_index if isinstance(fixed_index, int) else None,
+                "weekday": weekday,
+            }
+            self.gm.save_data()
         self.accept()
 
 
@@ -1719,6 +1905,12 @@ class DeadlineViewerDialog(QDialog):
                     info_row.addStretch()
                     info_row.addWidget(days_lbl)
                     card_layout.addLayout(info_row)
+
+                    deck_name = DeadlineManager.resolve_deck_name(dl.get("deck_id")) if DeadlineManager else None
+                    if deck_name:
+                        deck_lbl = QLabel(f"{_('Deck')}: {deck_name}")
+                        deck_lbl.setObjectName("SubLabel")
+                        card_layout.addWidget(deck_lbl)
 
                     inner_layout.addWidget(card)
 
