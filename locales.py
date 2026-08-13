@@ -1080,7 +1080,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "de": "Heute wiederholt",
         "es": "Repasados hoy",
         "ko": "오늘 복습",
-        "pt": "Cartões estudados hoje",
+        "pt": "Cartões hoje",
         "fr": "Révisés aujourd'hui",
         "vi": "Đã ôn hôm nay",
         "zh": "今日已复习",

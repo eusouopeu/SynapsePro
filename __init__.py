@@ -1134,9 +1134,9 @@ def _render_unified_widgets_panel(gm, lpm) -> str:
     used to render as independent flex rows stacked on top of each other,
     which cannot express a cell shared between them.
 
-    Layout (7 columns x 2 rows):
-      Row 1: Study Plan (cols 1-3, rowspan 2) | Streak (4) | Level (5)      | Next Level (6-7)
-      Row 2: Study Plan (cont.)               | Today (4)  | This Month (5) | Daily Challenge (6-7)
+    Layout (6 columns x 2 rows):
+      Row 1: Study Plan (cols 1-2, rowspan 2) | Streak (3) | Level (4)      | Next Level (5-6)
+      Row 2: Study Plan (cont.)               | Today (3)  | This Month (4) | Daily Challenge (5-6)
     """
     fragments = gm.render_widget_fragments()
     plan_css = daily_widgets.get_plan_widget_css()
@@ -1145,18 +1145,18 @@ def _render_unified_widgets_panel(gm, lpm) -> str:
 
     container_style = (
         "display: grid; "
-        "grid-template-columns: repeat(3, minmax(90px, 1.1fr)) repeat(4, minmax(90px, 1fr)); "
-        "grid-template-rows: auto auto; gap: 15px; max-width: 960px; "
+        "grid-template-columns: repeat(2, minmax(90px, 1.3fr)) repeat(4, minmax(90px, 1fr)); "
+        "grid-template-rows: auto auto; gap: 16px; max-width: 860px; "
         "margin: 0 auto 15px auto; padding: 0 10px; box-sizing: border-box; "
         "align-items: stretch;"
     )
     cells = "".join([
-        f'<div style="grid-column:4; grid-row:1;">{fragments["streak"]}</div>',
-        f'<div style="grid-column:5; grid-row:1;">{fragments["level"]}</div>',
-        f'<div style="grid-column:6 / span 2; grid-row:1;">{fragments["next_level"]}</div>',
-        f'<div style="grid-column:4; grid-row:2;">{fragments["reviews_today"]}</div>',
-        f'<div style="grid-column:5; grid-row:2;">{fragments["reviews_month"]}</div>',
-        f'<div style="grid-column:6 / span 2; grid-row:2;">{fragments["challenge"]}</div>',
+        f'<div style="grid-column:3; grid-row:1;">{fragments["streak"]}</div>',
+        f'<div style="grid-column:4; grid-row:1;">{fragments["level"]}</div>',
+        f'<div style="grid-column:5 / span 2; grid-row:1;">{fragments["next_level"]}</div>',
+        f'<div style="grid-column:3; grid-row:2;">{fragments["reviews_today"]}</div>',
+        f'<div style="grid-column:4; grid-row:2;">{fragments["reviews_month"]}</div>',
+        f'<div style="grid-column:5 / span 2; grid-row:2;">{fragments["challenge"]}</div>',
     ])
     html = f'<div id="unified-widgets-grid" style="{container_style}">{plan_html}{cells}</div>'
     return fragments["css"] + plan_css + html
