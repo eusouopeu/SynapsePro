@@ -322,7 +322,15 @@ def generate_learning_plan_widget(plan_data: List[Dict], *, grid_mode: bool = Fa
 
     if not plan_data:
         no_plan_msg = _("No learning plan configured yet.")
-        rows_html = f"<div style='padding: 0 15px 15px 15px;'><p style='font-size:0.9em; color: var(--text-color-light); margin: 0;'>{no_plan_msg}</p></div>"
+        cta_label = _("Configure Study Plan")
+        rows_html = f'''<div style="padding: 0 15px 15px 15px; display:flex; flex-direction:column; gap:10px; align-items:flex-start;">
+            <p style="font-size:0.9em; color: var(--text-color-light); margin: 0;">{no_plan_msg}</p>
+            <button type="button" onclick="pycmd('pycmd:synapsepro:study_plan_config')"
+                    style="background-color: var(--plan-date-color); color:#fff; border:none; border-radius:6px;
+                           padding:8px 14px; font-size:0.85em; font-weight:600; cursor:pointer; font-family:inherit;">
+                {cta_label}
+            </button>
+        </div>'''
     else:
         rows_container_style = "padding: 0 10px 10px 10px;"
         rows_content = ""

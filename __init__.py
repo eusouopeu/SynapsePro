@@ -135,6 +135,11 @@ def get_default_settings() -> Dict[str, Any]:
         "custom_theme_colors": {},       # Used when active_color_theme == "custom"
         "custom_bg_light": "#f5f5f7",    # Custom solid background (light mode)
         "custom_bg_dark":  "#1f1f21",    # Custom solid background (dark mode)
+        # Order of the 6 small cards in the unified widgets grid; user-editable
+        # via drag-and-drop. Any missing/unknown keys are repaired on read.
+        "widget_order": ["streak", "level", "next_level",
+                          "reviews_today", "reviews_month", "challenge"],
+        "stats_deck_filter": None,       # Deck id the stats panel is scoped to, or None for all decks.
     }
 
 # --- Custom solid background -------------------------------------------------
@@ -1128,6 +1133,33 @@ def on_profile_close():
         if hasattr(mw, attr): delattr(mw, attr)
 
 # --- Webview & Rendering Hooks ---
+# Fixed grid slots the 6 small widget cards can occupy (2 rows x [streak/level/
+# next-level, then today/month/challenge]); widget_order picks which card goes
+# in which slot, so the user can drag-reorder them without touching the grid.
+_WIDGET_SLOT_STYLES = [
+    "grid-column:3; grid-row:1;",
+    "grid-column:4; grid-row:1;",
+    "grid-column:5 / span 2; grid-row:1;",
+    "grid-column:3; grid-row:2;",
+    "grid-column:4; grid-row:2;",
+    "grid-column:5 / span 2; grid-row:2;",
+]
+_DEFAULT_WIDGET_ORDER = ["streak", "level", "next_level",
+                         "reviews_today", "reviews_month", "challenge"]
+
+
+def _get_widget_order() -> list:
+    """The user's saved card order, repaired against the known key set (so a
+    stale/corrupt setting or a future addon update with a new/removed card
+    never breaks the grid)."""
+    order = addon_settings.get("widget_order")
+    valid = [k for k in order if k in _DEFAULT_WIDGET_ORDER] if isinstance(order, list) else []
+    for k in _DEFAULT_WIDGET_ORDER:
+        if k not in valid:
+            valid.append(k)
+    return valid[:len(_DEFAULT_WIDGET_ORDER)]
+
+
 def _render_unified_widgets_panel(gm, lpm) -> str:
     """Combine the gamification cards and the Study Plan card into one CSS
     grid so the Study Plan card can span both rows. The two source modules
@@ -1137,6 +1169,8 @@ def _render_unified_widgets_panel(gm, lpm) -> str:
     Layout (6 columns x 2 rows):
       Row 1: Study Plan (cols 1-2, rowspan 2) | Streak (3) | Level (4)      | Next Level (5-6)
       Row 2: Study Plan (cont.)               | Today (3)  | This Month (4) | Daily Challenge (5-6)
+    The 6 small cards are drag-and-droppable; their slot order is persisted
+    in addon_settings["widget_order"].
     """
     fragments = gm.render_widget_fragments()
     plan_css = daily_widgets.get_plan_widget_css()
@@ -1148,17 +1182,55 @@ def _render_unified_widgets_panel(gm, lpm) -> str:
         "grid-template-columns: repeat(2, minmax(90px, 1.3fr)) repeat(4, minmax(90px, 1fr)); "
         "grid-template-rows: auto auto; gap: 16px; max-width: 860px; "
         "margin: 0 auto 15px auto; padding: 0 10px; box-sizing: border-box; "
-        "align-items: stretch;"
+        "align-items: stretch; animation: uwgFadeIn 220ms ease-out;"
     )
-    cells = "".join([
-        f'<div style="grid-column:3; grid-row:1;">{fragments["streak"]}</div>',
-        f'<div style="grid-column:4; grid-row:1;">{fragments["level"]}</div>',
-        f'<div style="grid-column:5 / span 2; grid-row:1;">{fragments["next_level"]}</div>',
-        f'<div style="grid-column:3; grid-row:2;">{fragments["reviews_today"]}</div>',
-        f'<div style="grid-column:4; grid-row:2;">{fragments["reviews_month"]}</div>',
-        f'<div style="grid-column:5 / span 2; grid-row:2;">{fragments["challenge"]}</div>',
-    ])
-    html = f'<div id="unified-widgets-grid" style="{container_style}">{plan_html}{cells}</div>'
+    drag_label = _("Drag to reorder")
+    order = _get_widget_order()
+    cells = "".join(
+        f'<div class="widget-cell" draggable="true" data-key="{key}" title="{drag_label}" '
+        f'style="{slot_style}">{fragments[key]}</div>'
+        for slot_style, key in zip(_WIDGET_SLOT_STYLES, order)
+    )
+    reorder_style = """
+    <style>
+        @keyframes uwgFadeIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
+        .widget-cell { cursor: grab; }
+        .widget-cell:active { cursor: grabbing; }
+    </style>
+    """
+    reorder_script = """
+    <script>
+    (function() {
+        var grid = document.getElementById('unified-widgets-grid');
+        if (!grid) return;
+        var cells = Array.prototype.slice.call(grid.querySelectorAll(':scope > .widget-cell'));
+        var dragged = null;
+        cells.forEach(function(cell) {
+            cell.addEventListener('dragstart', function(e) {
+                dragged = cell;
+                cell.style.opacity = '0.4';
+                try {
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', cell.dataset.key);
+                } catch (err) {}
+            });
+            cell.addEventListener('dragend', function() { cell.style.opacity = '1'; });
+            cell.addEventListener('dragover', function(e) { e.preventDefault(); });
+            cell.addEventListener('drop', function(e) {
+                e.preventDefault();
+                if (!dragged || dragged === cell) return;
+                var newOrder = cells.map(function(c) { return c.dataset.key; });
+                var ia = newOrder.indexOf(dragged.dataset.key);
+                var ib = newOrder.indexOf(cell.dataset.key);
+                var tmp = newOrder[ia]; newOrder[ia] = newOrder[ib]; newOrder[ib] = tmp;
+                pycmd('pycmd:synapsepro:reorder_widgets:' + encodeURIComponent(JSON.stringify(newOrder)));
+            });
+        });
+    })();
+    </script>
+    """
+    html = (f'<div id="unified-widgets-grid" style="{container_style}">{plan_html}{cells}</div>'
+            f'{reorder_style}{reorder_script}')
     return fragments["css"] + plan_css + html
 
 
@@ -1196,17 +1268,26 @@ def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrow
         )
 
         if addon_settings.get("statistics_widget_enabled", True):
-            try: stats_html = statistics_widget.render_statistics_widget_html(stats_days=int(addon_settings.get("stats_time_range", 7)))
+            try:
+                stats_html = statistics_widget.render_statistics_widget_html(
+                    stats_days=int(addon_settings.get("stats_time_range", 7)),
+                    deck_id=addon_settings.get("stats_deck_filter"),
+                )
             except Exception as e: print(f"SynapsePro: stats widget render error: {e}")
 
         gam_enabled = bool(addon_settings.get("gamification_widgets_enabled", True) and gm)
         plan_enabled = bool(addon_settings.get("daily_widgets_enabled", True) and lpm)
+        risk_html = ""
+        if gam_enabled:
+            try: risk_html = gm.get_streak_risk_banner_html()
+            except Exception as e: print(f"SynapsePro: streak risk banner error: {e}")
         if gam_enabled and plan_enabled:
             # Common case: both sections on -> one unified grid with the Study
             # Plan card spanning both rows (see _render_unified_widgets_panel).
-            try: widgets_panel_html = _render_unified_widgets_panel(gm, lpm)
+            try: widgets_panel_html = risk_html + _render_unified_widgets_panel(gm, lpm)
             except Exception as e: print(f"SynapsePro: widgets panel render error: {e}")
         else:
+            widgets_panel_html = risk_html
             # Either section can be toggled off independently in Settings; fall
             # back to simple standalone rendering rather than a grid designed
             # around both being present.
@@ -1295,6 +1376,34 @@ def _handle_plan_timer(cmd: str):
     elif action == "cancel" and len(parts) >= 3:
         _plan_timer_cancel(_up.unquote(parts[2]))
 
+def _export_dashboard_snapshot():
+    """Save a PNG snapshot of the current deck-browser dashboard so the user
+    can share their progress. Grabs the whole visible webview (not just one
+    widget) — simple and robust across the dashboard's different layouts."""
+    from datetime import date
+    from aqt.qt import QFileDialog
+
+    web = getattr(mw, 'web', None)
+    if not web:
+        tooltip(_("Could not access the dashboard view."))
+        return
+    pixmap = web.grab()
+    if pixmap.isNull():
+        tooltip(_("Nothing to export yet."))
+        return
+    default_name = f"synapsepro_dashboard_{date.today().isoformat()}.png"
+    path, _selected_filter = QFileDialog.getSaveFileName(
+        mw, _("Export Dashboard Snapshot"), default_name, "PNG (*.png)")
+    if not path:
+        return
+    if not path.lower().endswith(".png"):
+        path += ".png"
+    if pixmap.save(path, "PNG"):
+        tooltip(_("Snapshot saved: {}").format(os.path.basename(path)))
+    else:
+        tooltip(_("Could not save the snapshot."))
+
+
 def webview_did_receive_js_message(handled: bool, message: str, context: object) -> Union[bool, object]:
     if not isinstance(message, str) or not message.startswith("pycmd:"): return handled
     # These commands are emitted exclusively by widgets injected into the deck
@@ -1371,6 +1480,60 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
             print(f"SynapsePro: StudyPlanViewerDialog error: {e}")
         if mw.state == "deckBrowser":
             mw.deckBrowser.refresh()
+        return (True, None)
+    # "Configure Study Plan" CTA shown in the empty-state Study Plan card.
+    if cmd == "synapsepro:study_plan_config":
+        try:
+            show_configuration_dialog()
+        except Exception as e:
+            print(f"SynapsePro: study plan config error: {e}")
+        if mw.state == "deckBrowser":
+            mw.deckBrowser.refresh()
+        return (True, None)
+    # Level card in the widgets grid -> full rank ladder.
+    if cmd == "synapsepro:rank_overview":
+        gm = getattr(mw, 'gamification_manager', None)
+        if gm:
+            try:
+                gm.show_rank_overview_dialog(parent=mw)
+            except Exception as e:
+                print(f"SynapsePro: rank overview dialog error: {e}")
+        return (True, None)
+    # Drag-and-drop reorder of the 6 small widget cards.
+    if cmd.startswith("synapsepro:reorder_widgets:"):
+        try:
+            import urllib.parse as _up
+            raw = _up.unquote(cmd.split(":", 2)[2])
+            new_order = json.loads(raw)
+            if isinstance(new_order, list) and all(isinstance(k, str) for k in new_order):
+                valid = [k for k in new_order if k in _DEFAULT_WIDGET_ORDER]
+                for k in _DEFAULT_WIDGET_ORDER:
+                    if k not in valid:
+                        valid.append(k)
+                addon_settings["widget_order"] = valid[:len(_DEFAULT_WIDGET_ORDER)]
+                save_addon_settings()
+        except Exception as e:
+            print(f"SynapsePro: reorder widgets error: {e}")
+        if mw.state == "deckBrowser":
+            mw.deckBrowser.refresh()
+        return (True, None)
+    # Deck filter dropdown in the stats panel.
+    if cmd.startswith("synapsepro:stats_deck_filter:"):
+        try:
+            raw = cmd.split(":", 2)[2]
+            addon_settings["stats_deck_filter"] = int(raw) if raw.isdigit() and raw != "0" else None
+            save_addon_settings()
+        except Exception as e:
+            print(f"SynapsePro: stats deck filter error: {e}")
+        if mw.state == "deckBrowser":
+            mw.deckBrowser.refresh()
+        return (True, None)
+    # "Export" button in the stats toolbar -> save a PNG snapshot of the dashboard.
+    if cmd == "synapsepro:export_stats_image":
+        try:
+            _export_dashboard_snapshot()
+        except Exception as e:
+            print(f"SynapsePro: export snapshot error: {e}")
         return (True, None)
     if cmd == "synapsepro:gamification_viewer":
         toggle_gamification_sidebar()

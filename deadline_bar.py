@@ -348,6 +348,10 @@ class DeadlineManager:
                 --progress-bg: {_cd.get("grey_mid", "#444")};
                 --deadline-fill-color: {_cd["blue"]};
             }}
+            @keyframes dbFadeIn {{
+                from {{ opacity: 0; transform: translateY(-3px); }}
+                to {{ opacity: 1; transform: translateY(0); }}
+            }}
             .deadline-bar-container {{
                 display: flex;
                 align-items: center;
@@ -359,6 +363,7 @@ class DeadlineManager:
                 max-width: {DEADLINE_BAR_MAX_WIDTH};
                 border: 1px solid var(--stat-border);
                 box-sizing: border-box;
+                animation: dbFadeIn 220ms ease-out;
             }}
             body.night_mode .deadline-bar-container {{
                 border: 1px solid {_cd.get("grey_mid", "#444")};

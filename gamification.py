@@ -880,6 +880,112 @@ class GamificationManager:
         showInfo(_("{} data reset.").format(ADDON_NAME))
         return True
 
+    def get_streak_risk_banner_html(self) -> str:
+        """Small dismissible banner nudging the user when an active streak
+        hasn't been extended yet today and the day is getting late.
+
+        Deliberately quiet: only current-session state (no persisted
+        dismissal), so it simply won't reappear once the condition clears
+        (streak extended, or a fresh day starts).
+        """
+        try:
+            streak = self.get_streak()
+            if streak <= 0:
+                return ""
+            if self.get_reviews_today_count() > 0:
+                return ""
+            if datetime.now().hour < 19:
+                return ""
+        except Exception:
+            return ""
+
+        msg = _("Your {}-day streak is at risk — you haven't studied today yet!").format(streak)
+        dismiss_label = _("Dismiss")
+        _cl = _palette(False)
+        _cd = _palette(True)
+        return f'''
+        <style>
+            .streak-risk-banner {{
+                display: flex; align-items: center; gap: 10px;
+                max-width: 860px; margin: 0 auto 12px auto; padding: 10px 16px;
+                border-radius: 10px; box-sizing: border-box; font-size: 0.9em;
+                background-color: {_cl["red_bg"]}; border: 1px solid {_cl["red"]};
+                color: {_cl["red_text"]}; animation: srbFadeIn 220ms ease-out;
+            }}
+            body.night_mode .streak-risk-banner {{
+                background-color: {_cd["red_bg"]}; border: 1px solid {_cd["red"]};
+                color: {_cd["red_text"]};
+            }}
+            @keyframes srbFadeIn {{
+                from {{ opacity: 0; transform: translateY(-4px); }}
+                to {{ opacity: 1; transform: translateY(0); }}
+            }}
+        </style>
+        <div class="streak-risk-banner" role="status">
+            <span aria-hidden="true" style="font-size:1.2em;">🔥</span>
+            <span style="flex:1 1 auto;">{msg}</span>
+            <span onclick="this.closest('.streak-risk-banner').style.display='none';"
+                  title="{dismiss_label}" role="button" tabindex="0"
+                  style="cursor:pointer; opacity:0.65; font-weight:bold; padding:0 4px; user-select:none;">✕</span>
+        </div>
+        '''
+
+    def show_rank_overview_dialog(self, parent=None):
+        """Full rank ladder with the current rank highlighted — opened by
+        clicking the level card in the dashboard."""
+        from aqt.qt import (QDialog, QVBoxLayout, QLabel, QScrollArea, QWidget,
+                             QDialogButtonBox, Qt)
+
+        current_level = self.get_level()
+        current_rank_level = self.get_current_rank_info().get("level", 0)
+        c = _palette(is_night_mode)
+
+        dialog = QDialog(parent)
+        dialog.setWindowTitle(_("SynapsePro - Ranks"))
+        dialog.setMinimumSize(380, 480)
+        layout = QVBoxLayout(dialog)
+
+        header = QLabel(f"<h3 style='margin:0 0 10px 0;'>{_('Your Rank Progress')}</h3>")
+        layout.addWidget(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setSpacing(4)
+
+        label_lvl = _("Lvl")
+        label_current = _("current")
+        for rank in self.get_all_ranks():
+            name = rank.get("name", "").replace("<br/>", " ").replace("<br>", " ")
+            is_current = rank.get("level") == current_rank_level
+            reached = current_level >= rank.get("level", 0)
+            if is_current:
+                row_text = (f"<b style='color:{c['blue']};'>▶ {label_lvl} {rank['level']}+ "
+                            f"— {name} ({label_current})</b>")
+            elif reached:
+                row_text = f"<span style='color:{c['green']};'>✓ {label_lvl} {rank['level']}+ — {name}</span>"
+            else:
+                row_text = f"<span style='color:{c['text_muted']};'>🔒 {label_lvl} {rank['level']}+ — {name}</span>"
+            lbl = QLabel(row_text)
+            lbl.setTextFormat(Qt.TextFormat.RichText)
+            inner_layout.addWidget(lbl)
+        inner_layout.addStretch(1)
+        scroll.setWidget(inner)
+        layout.addWidget(scroll)
+
+        footer = QLabel(
+            f"<p style='margin:8px 0 0 0; color:{c['text_muted']}; font-size:12px;'>"
+            f"{_('Level {} • {} XP total').format(current_level, self.data.get('xp', 0))}</p>"
+        )
+        layout.addWidget(footer)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        button_box.rejected.connect(dialog.reject)
+        button_box.accepted.connect(dialog.accept)
+        layout.addWidget(button_box)
+        dialog.exec()
+
     def render_widget_fragments(self) -> Dict[str, str]:
         """
         Builds each gamification widget card (level, streak, challenge,
@@ -933,11 +1039,16 @@ class GamificationManager:
                 --level-accent: {_c_dark["blue"]};
                 --challenge-ready: {_tint_hex(_c_dark["blue_bright"], 0.35)};
             }}
+            @keyframes gwFadeIn {{
+                from {{ opacity: 0; transform: translateY(-3px); }}
+                to {{ opacity: 1; transform: translateY(0); }}
+            }}
             .gamewidget {{
                 background-color: var(--stat-bg); border-radius: 12px; padding: 15px;
                 border: 1px solid var(--stat-border); text-align: left;
                 flex: 1 1 auto; min-width: 0; box-sizing: border-box;
                 display: flex; flex-direction: column; justify-content: center; position: relative;
+                animation: gwFadeIn 220ms ease-out;
             }}
             body.night_mode .gamewidget {{ border: 1px solid {_c_dark["grey_mid"]}; }}
         </style>
@@ -974,7 +1085,9 @@ class GamificationManager:
         # flex-basis:max-content lets the box grow with the title (capped at
         # 280px); the flexible challenge widget gives up that space. Under
         # pressure it can still shrink back to 160px, where the title wraps.
-        lvl_wid = f'''<div class="gamewidget level-widget" style="flex-direction:row; align-items:center; flex: 0 1 auto; flex-basis:max-content; min-width:160px; max-width:280px; padding:10px 15px; gap: 10px;" title="{rank_tooltip}">
+        lvl_wid = f'''<div class="gamewidget level-widget" role="button" tabindex="0"
+                        onclick="pycmd('pycmd:synapsepro:rank_overview')"
+                        style="flex-direction:row; align-items:center; flex: 0 1 auto; flex-basis:max-content; min-width:160px; max-width:280px; padding:10px 15px; gap: 10px; cursor:pointer;" title="{rank_tooltip}">
                         {lvl_icon}
                         <div style="flex-grow: 1; min-width: 0;">{rank_name_html}</div>
                     </div>'''
@@ -999,7 +1112,7 @@ class GamificationManager:
             status_tip = f"{chall_cur}/{chall_target}"
 
         chall_indicator = (
-            f'<div title="{status_tip}" style="width:22px; height:22px; border-radius:50%; '
+            f'<div title="{status_tip}" role="img" aria-label="{status_tip}" style="width:22px; height:22px; border-radius:50%; '
             f'background-color: {circle_bg}; display:flex; align-items:center; '
             f'justify-content:center; flex-shrink:0; user-select:none; position:relative;">'
             f'<svg aria-hidden="true" width="26" height="26" viewBox="0 0 26 26" '
@@ -1048,7 +1161,7 @@ class GamificationManager:
 
         xp_current_str = f"{xp_current:,}"; needed_str = "MAX" if needed == float('inf') else f"{needed:,}"; rem_xp_disp = "N/A" if needed == float('inf') else f"{rem_xp:,}";
         prog_bar_title = label_max_reached_tpl.format(xp_current_str) if needed == float('inf') else f"{xp_current_str} / {needed_str} XP"
-        prog_bar=f'<div class="progress-bar-outer" style="width:100%; height:{bar_h}; background-color: var(--progress-bg); border-radius:{bar_h}; overflow:hidden; margin-top:8px;" title="{prog_bar_title}"><div class="progress-bar-inner" style="height:100%; width:{prog}%; background-color: var(--primary-blue); border-radius:{bar_h}; transition:width 0.3s ease-out;"></div></div>'
+        prog_bar=f'<div class="progress-bar-outer" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{prog}" aria-valuetext="{prog_bar_title}" aria-label="{label_next_level}" style="width:100%; height:{bar_h}; background-color: var(--progress-bg); border-radius:{bar_h}; overflow:hidden; margin-top:8px;" title="{prog_bar_title}"><div class="progress-bar-inner" style="height:100%; width:{prog}%; background-color: var(--primary-blue); border-radius:{bar_h}; transition:width 0.3s ease-out;"></div></div>'
 
         next_lvl_wid=f'<div class="gamewidget next-level-widget" style="flex:0 1 280px; min-width:190px; width:100%; height:100%; box-sizing:border-box;"><div style="display:flex; justify-content:space-between; align-items:baseline; width:100%;"><h5 style="{title_style_gam}">{label_next_level}</h5><span style="{sec_style_gam}">{label_remaining_tpl.format(rem_xp_disp)}</span></div>{prog_bar}</div>'
 
