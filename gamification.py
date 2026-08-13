@@ -639,6 +639,21 @@ class GamificationManager:
         except Exception:
             return 0
 
+    def get_reviews_this_month_count(self) -> int:
+        """Number of cards reviewed since the start of the current calendar
+        month, using the same Anki-day rollover boundary as `_day_start_ms`."""
+        if not mw or not mw.col:
+            return 0
+        try:
+            month_start_date = _anki_today().replace(day=1)
+            start_dt = (datetime.combine(month_start_date, datetime.min.time())
+                        + timedelta(hours=self._get_rollover_hour()))
+            start_ms = int(start_dt.timestamp() * 1000)
+            return mw.col.db.scalar(
+                "SELECT COUNT(*) FROM revlog WHERE id >= ? AND ease > 0", start_ms) or 0
+        except Exception:
+            return 0
+
     def get_challenge_progress(self) -> tuple[int, int]:
         """Return (current, target) for today's challenge, measured from revlog."""
         challenge = self._get_valid_challenge()
@@ -1044,6 +1059,13 @@ class GamificationManager:
                         <p style="font-size:1.5em; font-weight:bold; color: var(--primary-blue); margin:0;">{reviews_today}</p>
                     </div>'''
 
+        reviews_month = self.get_reviews_this_month_count()
+        label_reviews_month = _("Reviews This Month")
+        reviews_month_wid = f'''<div class="gamewidget reviews-month-widget" style="text-align:center; width:100%; height:100%; box-sizing:border-box; justify-content:center; align-items:center;">
+                        <h5 style="{title_style_gam}">{label_reviews_month}</h5>
+                        <p style="font-size:1.5em; font-weight:bold; color: var(--primary-blue); margin:0;">{reviews_month}</p>
+                    </div>'''
+
         return {
             "css": css,
             "level": lvl_wid,
@@ -1051,4 +1073,5 @@ class GamificationManager:
             "challenge": chall_wid,
             "next_level": next_lvl_wid,
             "reviews_today": reviews_today_wid,
+            "reviews_month": reviews_month_wid,
         }

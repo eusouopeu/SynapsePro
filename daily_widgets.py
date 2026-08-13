@@ -610,7 +610,7 @@ def generate_learning_plan_widget(plan_data: List[Dict], *, grid_mode: bool = Fa
         rows_html = f'<div style="{rows_container_style}">{rows_content}{modal_html}</div>'
 
     if grid_mode:
-        widget_style = f"{base_style} grid-column: 1; grid-row: 1 / span 2; width: 100%; height: 100%; min-height: 0; box-sizing: border-box; display: flex; flex-direction: column; justify-content: flex-start; overflow-y: auto;"
+        widget_style = f"{base_style} grid-column: 1 / span 3; grid-row: 1 / span 2; width: 100%; height: 100%; min-height: 0; box-sizing: border-box; display: flex; flex-direction: column; justify-content: flex-start; overflow-y: auto;"
     else:
         widget_style = f"{base_style} flex: {PLAN_WIDGET_FLEX_GROW} {PLAN_WIDGET_FLEX_SHRINK} {PLAN_WIDGET_FLEX_BASIS}; max-width: {PLAN_WIDGET_MAX_WIDTH}; min-width: 200px; min-height: 100px; display: flex; flex-direction: column; justify-content: flex-start;"
     widget_html = f'''<div class="daily-widget plan-widget" style="{widget_style}">{header_html}{rows_html}</div>'''
