@@ -90,10 +90,14 @@ def _build_mini_chart():
     """Inline-SVG sparkline: reviews per day, last CHART_DAYS days.
 
     The y-axis is relative to the window: the best day in the window is 100%,
-    a day with no reviews sits on the baseline. Includes x-axis day-of-month
-    tick labels and a custom follow-cursor tooltip (invisible full-height
-    hover rects as hit targets, hit target ≫ mark) showing the exact date
-    and review count for the hovered day.
+    a day with no reviews sits on the baseline. Includes x-axis tick labels
+    relative to today (e.g. "-30", "-10", "Today") and a custom follow-cursor
+    tooltip (invisible full-height hover rects as hit targets, hit target ≫
+    mark) showing the exact date and review count for the hovered day.
+
+    Returns (html, avg_daily_reviews) — the average is the mean review count
+    over the CHART_DAYS window, reused by the "Daily Average" stat block so
+    it doesn't need a second pass over the same data.
     """
     today = anki_today()
     counts = get_daily_review_counts(since_days=CHART_DAYS + 2)
@@ -170,9 +174,12 @@ def _build_mini_chart():
         f'</svg>'
     )
 
-    # 4 evenly spaced x-axis tick labels (day-of-month): start, ~1/3, ~2/3, end.
-    tick_positions = sorted({0, (CHART_DAYS - 1) // 3, (2 * (CHART_DAYS - 1)) // 3, CHART_DAYS - 1})
-    axis_labels_html = "".join(f'<span>{days[i].day}</span>' for i in tick_positions)
+    # 4 x-axis tick labels relative to today, e.g. "-30", "-20", "-10", "Today".
+    label_today = _("Today")
+    offsets = (CHART_DAYS, (CHART_DAYS * 2) // 3, CHART_DAYS // 3, 0)
+    axis_labels_html = "".join(
+        f'<span>{("-" + str(o)) if o else label_today}</span>' for o in offsets
+    )
     axis_html = f'<div class="spark-axis-labels">{axis_labels_html}</div>'
 
     tooltip_html = '<div class="spark-tooltip"></div>'
@@ -211,7 +218,8 @@ def _build_mini_chart():
     </script>
     """
 
-    return svg + axis_html + tooltip_html + script
+    avg_daily = (sum(values) / CHART_DAYS) if CHART_DAYS else 0.0
+    return svg + axis_html + tooltip_html + script, avg_daily
 
 
 def get_statistics_data(stats_days=7):
@@ -228,7 +236,7 @@ def get_statistics_data(stats_days=7):
     if cached and now - cached[0] <= _STATISTICS_CACHE_TTL_SECONDS:
         return cached[1]
 
-    chart_html = _build_mini_chart()
+    chart_html, avg_daily_reviews = _build_mini_chart()
 
     stats_start_ts = int((datetime.now() - timedelta(days=stats_days)).timestamp()) * 1000
 
@@ -274,14 +282,17 @@ def get_statistics_data(stats_days=7):
     total_new_cards = total_new_cards or 0
     
     new_cards_percent = (total_new_cards / total_active_cards * 100) if total_active_cards > 0 else 0
+    studied_percent = 100 - new_cards_percent
 
     result = {
         "chart_html": chart_html,
+        "avg_daily_reviews": avg_daily_reviews,
         "efficiency_raw": efficiency_bar_percent_raw,
         "efficiency_cards_per_min": efficiency_score,
         "accuracy_raw": accuracy_percent,
         "retention_percent": retention_percent,
         "new_cards_percent": new_cards_percent,
+        "studied_percent": studied_percent,
         "days_scope": stats_days
     }
     _statistics_cache[stats_days] = (time.monotonic(), result)
@@ -303,7 +314,7 @@ def get_minimal_statistics_data(stats_days=7):
     if cached and now - cached[0] <= _STATISTICS_CACHE_TTL_SECONDS:
         return cached[1]
 
-    chart_html = _build_mini_chart()
+    chart_html, _avg_daily_reviews = _build_mini_chart()
     stats_start_ts = int(
         (datetime.now() - timedelta(days=stats_days)).timestamp()
     ) * 1000
@@ -366,27 +377,30 @@ def render_widget_html_internal(stats):
     eff_raw = stats['efficiency_raw']
     eff_visual = min(100, eff_raw)
     eff_cards_per_min = stats.get('efficiency_cards_per_min', 0)
-    
+    avg_daily_reviews = stats.get('avg_daily_reviews', 0)
+    studied_val = stats.get('studied_percent', 100 - new_cards_val)
+
     MAIN_BLUE = _palette(is_night_mode)["blue"]
-    
+
     efficiency_color = MAIN_BLUE
     accuracy_color = MAIN_BLUE
     retention_color = MAIN_BLUE
 
     tooltip_consistency = _("Reviews per day (last 30 days). The best day in this period is the top of the curve.")
+    tooltip_avg_daily = _("Average cards reviewed per day over the last 30 days.")
     tooltip_efficiency = _("Cards per minute ({}). Time capped at 45s/card.").format(period_text)
     tooltip_accuracy = _("Correct answers: {:.1f}% ({}).").format(acc_real, period_text)
     tooltip_retention = _("Retention on reviews ({}).").format(period_text)
-    tooltip_new_cards = _("Percentage of unseen cards in collection.")
+    tooltip_studied = _("Percentage of cards in your active collection that you have studied at least once.")
     tooltip_info = _("What do these statistics show?")
 
     # Pre-computed translated labels for HTML
     label_consistency = _("Consistency")
-    label_efficiency = _("Efficiency")
+    label_daily_average = _("Daily Average")
     label_eff_short = _("Eff.")
     label_acc_short = _("Acc.")
     label_retention = _("Retention")
-    label_new_cards = _("Unstudied Cards")
+    label_studied = _("Studied Cards")
 
 
     _cl = _palette(False)
@@ -418,7 +432,7 @@ def render_widget_html_internal(stats):
             /* anchor for the absolutely positioned info button (top right) */
             position: relative;
             display: grid;
-            grid-template-columns: 1.2fr 1.1fr 0.9fr;
+            grid-template-columns: 1.1fr 1.2fr 0.9fr;
             gap: 16px;
             /* stretch: all three blocks share the tallest height, so their
                contents can bottom-align flush via the flexible spacers */
@@ -511,14 +525,15 @@ def render_widget_html_internal(stats):
         .progress-row {{
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 6px;
         }}
         .progress-row .label {{
-            width: 46px;
-            flex-shrink: 0;
+            flex: 0 0 auto;
+            white-space: nowrap;
         }}
         .progress-bar-bg {{
-            flex-grow: 1;
+            flex: 1 1 auto;
+            min-width: 24px;
             height: 12px;
             background-color: var(--progress-bg);
             border-radius: 6px;
@@ -530,11 +545,22 @@ def render_widget_html_internal(stats):
             transition: width 0.5s ease-out;
         }}
         .progress-row .value {{
-            width: 44px;
-            flex-shrink: 0;
+            flex: 0 0 auto;
             text-align: right;
             font-size: 12px;
             color: var(--text-color-light);
+            white-space: nowrap;
+        }}
+        .avg-daily-row {{
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 8px;
+        }}
+        .avg-daily-value {{
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-color);
             white-space: nowrap;
         }}
         .single-circle-stat {{
@@ -592,9 +618,12 @@ def render_widget_html_internal(stats):
             </div>
         </div>
 
-        <!-- Block 2: Efficiency -->
+        <!-- Block 2: Daily Average + Efficiency bars -->
         <div class="stat-block divided">
-            <h3 class="subtle-title">{label_efficiency}</h3>
+            <div class="avg-daily-row" title="{tooltip_avg_daily}">
+                <h3 class="subtle-title" style="margin:0;">{label_daily_average}</h3>
+                <span class="avg-daily-value">{avg_daily_reviews:.0f}</span>
+            </div>
             <div style="flex: 1 1 auto; min-height: var(--spacer-height-efficiency);"></div>
 
             <div class="progress-row" title="{tooltip_efficiency}">
@@ -623,10 +652,10 @@ def render_widget_html_internal(stats):
                 </div>
             </div>
 
-            <div class="single-circle-stat" title="{tooltip_new_cards}">
-                <h3 class="subtle-title">{label_new_cards}</h3>
+            <div class="single-circle-stat" title="{tooltip_studied}">
+                <h3 class="subtle-title">{label_studied}</h3>
                 <div class="retention-circle-container">
-                    <div class="retention-circle" style="background: radial-gradient(closest-side, var(--stat-bg) 79%, transparent 80% 100%), conic-gradient({MAIN_BLUE} {new_cards_val:.1f}%, var(--progress-bg) 0);">{new_cards_val:.0f}%</div>
+                    <div class="retention-circle" style="background: radial-gradient(closest-side, var(--stat-bg) 79%, transparent 80% 100%), conic-gradient({MAIN_BLUE} {studied_val:.1f}%, var(--progress-bg) 0);">{studied_val:.0f}%</div>
                 </div>
             </div>
         </div>
@@ -665,6 +694,8 @@ def show_statistics_info_dialog(parent=None, stats_days=7):
          _("Your reviews per day over the last 30 days. The curve is relative "
            "to this period: the day with the most reviews forms the peak, days "
            "without reviews sit on the baseline. The dot marks today.")),
+        (_("Daily Average"),
+         _("Average cards reviewed per day over the last 30 days.")),
         (_("Efficiency (Eff.)"),
          _("How many cards you answer correctly per minute of study time "
            "({}). A full bar equals 7.5 correct cards per minute. Time per "
@@ -678,9 +709,9 @@ def show_statistics_info_dialog(parent=None, stats_days=7):
          _("The percentage of correct answers on review cards ({}) — cards "
            "you had already learned. This shows how well you retain content "
            "long-term.").format(period_text)),
-        (_("Unstudied Cards"),
-         _("The percentage of cards in your active collection that you have "
-           "never studied.")),
+        (_("Studied Cards"),
+         _("Percentage of cards in your active collection that you have "
+           "studied at least once.")),
     ]
 
     body = "".join(

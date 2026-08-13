@@ -1134,9 +1134,9 @@ def _render_unified_widgets_panel(gm, lpm) -> str:
     used to render as independent flex rows stacked on top of each other,
     which cannot express a cell shared between them.
 
-    Layout (4 columns x 2 rows):
-      Row 1: Study Plan (rowspan 2) | Streak | Level | Next Level
-      Row 2: Study Plan (cont.)     | Reviewed Today  | Daily Challenge (2 cols)
+    Layout (7 columns x 2 rows):
+      Row 1: Study Plan (cols 1-3, rowspan 2) | Streak (4) | Level (5)      | Next Level (6-7)
+      Row 2: Study Plan (cont.)               | Today (4)  | This Month (5) | Daily Challenge (6-7)
     """
     fragments = gm.render_widget_fragments()
     plan_css = daily_widgets.get_plan_widget_css()
@@ -1145,17 +1145,18 @@ def _render_unified_widgets_panel(gm, lpm) -> str:
 
     container_style = (
         "display: grid; "
-        "grid-template-columns: minmax(200px, 1.3fr) repeat(3, minmax(120px, 1fr)); "
-        "grid-template-rows: auto auto; gap: 15px; max-width: 880px; "
+        "grid-template-columns: repeat(3, minmax(90px, 1.1fr)) repeat(4, minmax(90px, 1fr)); "
+        "grid-template-rows: auto auto; gap: 15px; max-width: 960px; "
         "margin: 0 auto 15px auto; padding: 0 10px; box-sizing: border-box; "
         "align-items: stretch;"
     )
     cells = "".join([
-        f'<div style="grid-column:2; grid-row:1;">{fragments["streak"]}</div>',
-        f'<div style="grid-column:3; grid-row:1;">{fragments["level"]}</div>',
-        f'<div style="grid-column:4; grid-row:1;">{fragments["next_level"]}</div>',
-        f'<div style="grid-column:2; grid-row:2;">{fragments["reviews_today"]}</div>',
-        f'<div style="grid-column:3 / span 2; grid-row:2;">{fragments["challenge"]}</div>',
+        f'<div style="grid-column:4; grid-row:1;">{fragments["streak"]}</div>',
+        f'<div style="grid-column:5; grid-row:1;">{fragments["level"]}</div>',
+        f'<div style="grid-column:6 / span 2; grid-row:1;">{fragments["next_level"]}</div>',
+        f'<div style="grid-column:4; grid-row:2;">{fragments["reviews_today"]}</div>',
+        f'<div style="grid-column:5; grid-row:2;">{fragments["reviews_month"]}</div>',
+        f'<div style="grid-column:6 / span 2; grid-row:2;">{fragments["challenge"]}</div>',
     ])
     html = f'<div id="unified-widgets-grid" style="{container_style}">{plan_html}{cells}</div>'
     return fragments["css"] + plan_css + html
@@ -1217,7 +1218,7 @@ def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrow
                     widgets_panel_html += (
                         frag["css"] + f'<div style="{row_style}">'
                         f'{frag["level"]}{frag["streak"]}{frag["challenge"]}'
-                        f'{frag["next_level"]}{frag["reviews_today"]}</div>'
+                        f'{frag["next_level"]}{frag["reviews_today"]}{frag["reviews_month"]}</div>'
                     )
                 except Exception as e: print(f"SynapsePro: gamification widget render error: {e}")
             if plan_enabled:
