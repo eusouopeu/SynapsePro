@@ -76,7 +76,9 @@ try:
     from .sidebar import GamificationSidebar
     from .learning_plan import LearningPlanManager
     from .deadline_bar import DeadlineManager
-    from .configuration import LearningPlanConfigDialog, StudyPlanViewerDialog, DeadlineViewerDialog, DeadlineConfigDialog, ChallengeConfigDialog
+    from .configuration import (LearningPlanConfigDialog, StudyPlanViewerDialog, DeadlineViewerDialog,
+                                 DeadlineConfigDialog, ChallengeConfigDialog, WeeklyGoalConfigDialog,
+                                 DeckGoalConfigDialog)
     modules_loaded = True
 except Exception as e:
     print(f"SynapsePro1: ERROR - Failed to import sub-modules: {e}")
@@ -140,6 +142,14 @@ def get_default_settings() -> Dict[str, Any]:
         "widget_order": ["streak", "level", "next_level",
                           "reviews_today", "reviews_month", "challenge"],
         "stats_deck_filter": None,       # Deck id the stats panel is scoped to, or None for all decks.
+        "weekly_goal_cards": 0,          # Collection-wide weekly cards goal; 0 = not set.
+        "deck_goals": {},                # {"<deck_id>": <weekly cards target>}, per-deck goals.
+        "os_notifications_enabled": False,
+        "os_notification_hour": 20,
+        "os_notification_minute": 0,
+        "dashboard_theme_schedule_enabled": False,
+        "dashboard_dark_start_hour": 20,
+        "dashboard_dark_end_hour": 7,
     }
 
 # --- Custom solid background -------------------------------------------------
@@ -1046,6 +1056,8 @@ def _init_ui_delayed(expected_profile_generation=None):
     # early lightweight phase from completing.
     _init_data_managers()
     _init_launcher_dock()
+    _init_os_notifications()
+    _init_theme_schedule()
 
     daily_state_changed = False
     if gamification_manager and not _daily_maintenance_done:
@@ -1269,9 +1281,14 @@ def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrow
 
         if addon_settings.get("statistics_widget_enabled", True):
             try:
+                _stats_deck_id = addon_settings.get("stats_deck_filter")
+                _deck_goal_target = None
+                if _stats_deck_id:
+                    _deck_goal_target = int((addon_settings.get("deck_goals") or {}).get(str(_stats_deck_id), 0) or 0)
                 stats_html = statistics_widget.render_statistics_widget_html(
                     stats_days=int(addon_settings.get("stats_time_range", 7)),
-                    deck_id=addon_settings.get("stats_deck_filter"),
+                    deck_id=_stats_deck_id,
+                    deck_goal_target=_deck_goal_target,
                 )
             except Exception as e: print(f"SynapsePro: stats widget render error: {e}")
 
@@ -1281,6 +1298,8 @@ def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrow
         if gam_enabled:
             try: risk_html = gm.get_streak_risk_banner_html()
             except Exception as e: print(f"SynapsePro: streak risk banner error: {e}")
+            try: risk_html += gm.get_weekly_goal_html(int(addon_settings.get("weekly_goal_cards", 0) or 0))
+            except Exception as e: print(f"SynapsePro: weekly goal card error: {e}")
         if gam_enabled and plan_enabled:
             # Common case: both sections on -> one unified grid with the Study
             # Plan card spanning both rows (see _render_unified_widgets_panel).
@@ -1375,6 +1394,114 @@ def _handle_plan_timer(cmd: str):
         _plan_timer_start(_up.unquote(parts[3]), int(parts[2]))
     elif action == "cancel" and len(parts) >= 3:
         _plan_timer_cancel(_up.unquote(parts[2]))
+
+# --- OS-level study reminder (Recommendation #4) --------------------------
+_notification_tray_icon = None
+_notification_timer = None
+_last_notification_fired_day = None
+
+
+def _init_os_notifications():
+    """Create (once) the hidden tray icon + 60s poll timer backing the daily
+    OS notification. Idempotent — safe to call from every _init_ui_delayed
+    pass. Requires Anki to be running: this cannot notify while Anki is
+    fully closed, only while it's open (even if minimized/backgrounded)."""
+    global _notification_tray_icon, _notification_timer
+    try:
+        from aqt.qt import QSystemTrayIcon, QTimer as _QTimer
+        if QSystemTrayIcon is None or not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        if _notification_tray_icon is None:
+            _notification_tray_icon = QSystemTrayIcon(mw.windowIcon(), mw)
+            _notification_tray_icon.setToolTip("SynapsePro")
+        if _notification_timer is None:
+            _notification_timer = _QTimer(mw)
+            _notification_timer.timeout.connect(_check_os_notification_schedule)
+            _notification_timer.start(60000)
+    except Exception as e:
+        print(f"SynapsePro: OS notification init error: {e}")
+
+
+def _check_os_notification_schedule():
+    global _last_notification_fired_day
+    try:
+        if not addon_settings.get("os_notifications_enabled", False):
+            return
+        if not mw or not getattr(mw, "col", None):
+            return
+        from datetime import datetime as _dt
+        now = _dt.now()
+        target_h = int(addon_settings.get("os_notification_hour", 20))
+        target_m = int(addon_settings.get("os_notification_minute", 0))
+        if now.hour != target_h or now.minute != target_m:
+            return
+        today_key = now.date().isoformat()
+        if _last_notification_fired_day == today_key:
+            return
+        _last_notification_fired_day = today_key
+        gm = getattr(mw, 'gamification_manager', None)
+        if gm and gm.get_reviews_today_count() > 0:
+            return  # already studied today — nothing to nudge about
+        if _notification_tray_icon:
+            from aqt.qt import QSystemTrayIcon
+            _notification_tray_icon.showMessage(
+                "SynapsePro",
+                _("You haven't studied yet today — a quick review session keeps your streak alive!"),
+                QSystemTrayIcon.MessageIcon.Information,
+                8000,
+            )
+    except Exception as e:
+        print(f"SynapsePro: OS notification check error: {e}")
+
+
+# --- Scheduled dashboard theme (Recommendation #13) ------------------------
+# Drives Anki's real light/dark theme on a daily schedule, independent of the
+# user manually toggling Anki's own night-mode setting. Best-effort: if the
+# aqt.theme API differs across Anki versions this silently no-ops (logged).
+_theme_schedule_timer = None
+_theme_schedule_last_applied = None  # "dark" | "light" | None
+
+
+def _init_theme_schedule():
+    global _theme_schedule_timer
+    try:
+        from aqt.qt import QTimer as _QTimer
+        if _theme_schedule_timer is None:
+            _theme_schedule_timer = _QTimer(mw)
+            _theme_schedule_timer.timeout.connect(_check_theme_schedule)
+            _theme_schedule_timer.start(60000)
+            _check_theme_schedule()
+    except Exception as e:
+        print(f"SynapsePro: theme schedule init error: {e}")
+
+
+def _is_scheduled_dark_now() -> bool:
+    from datetime import datetime as _dt
+    start_h = int(addon_settings.get("dashboard_dark_start_hour", 20))
+    end_h = int(addon_settings.get("dashboard_dark_end_hour", 7))
+    hour = _dt.now().hour
+    if start_h == end_h:
+        return False
+    if start_h < end_h:
+        return start_h <= hour < end_h
+    return hour >= start_h or hour < end_h  # window wraps past midnight
+
+
+def _check_theme_schedule():
+    global _theme_schedule_last_applied
+    try:
+        if not addon_settings.get("dashboard_theme_schedule_enabled", False):
+            return
+        want_dark = _is_scheduled_dark_now()
+        desired = "dark" if want_dark else "light"
+        if desired == _theme_schedule_last_applied:
+            return
+        from aqt.theme import theme_manager, Theme
+        theme_manager.theme = Theme.DARK if want_dark else Theme.LIGHT
+        _theme_schedule_last_applied = desired
+    except Exception as e:
+        print(f"SynapsePro: theme schedule apply error: {e}")
+
 
 def _export_dashboard_snapshot():
     """Save a PNG snapshot of the current deck-browser dashboard so the user
@@ -1490,6 +1617,18 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
         if mw.state == "deckBrowser":
             mw.deckBrowser.refresh()
         return (True, None)
+    # Gear icon on the weekly-goal card.
+    if cmd == "synapsepro:weekly_goal_settings":
+        try:
+            dlg = WeeklyGoalConfigDialog(int(addon_settings.get("weekly_goal_cards", 0) or 0), parent=mw)
+            if dlg.exec():
+                addon_settings["weekly_goal_cards"] = int(dlg.value)
+                save_addon_settings()
+        except Exception as e:
+            print(f"SynapsePro: weekly goal dialog error: {e}")
+        if mw.state == "deckBrowser":
+            mw.deckBrowser.refresh()
+        return (True, None)
     # Level card in the widgets grid -> full rank ladder.
     if cmd == "synapsepro:rank_overview":
         gm = getattr(mw, 'gamification_manager', None)
@@ -1525,6 +1664,29 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
             save_addon_settings()
         except Exception as e:
             print(f"SynapsePro: stats deck filter error: {e}")
+        if mw.state == "deckBrowser":
+            mw.deckBrowser.refresh()
+        return (True, None)
+    # "Set/Edit weekly goal" link under the stats toolbar, for the deck currently selected in the filter.
+    if cmd == "synapsepro:deck_goal_settings":
+        deck_id = addon_settings.get("stats_deck_filter")
+        if deck_id:
+            try:
+                deck = mw.col.decks.get(deck_id, default=False)
+                deck_name = deck["name"].replace("::", " → ") if deck else str(deck_id)
+                goals = addon_settings.get("deck_goals") or {}
+                current_target = int(goals.get(str(deck_id), 0) or 0)
+                dlg = DeckGoalConfigDialog(deck_name, current_target, parent=mw)
+                if dlg.exec():
+                    goals = dict(addon_settings.get("deck_goals") or {})
+                    if dlg.value > 0:
+                        goals[str(deck_id)] = int(dlg.value)
+                    else:
+                        goals.pop(str(deck_id), None)
+                    addon_settings["deck_goals"] = goals
+                    save_addon_settings()
+            except Exception as e:
+                print(f"SynapsePro: deck goal dialog error: {e}")
         if mw.state == "deckBrowser":
             mw.deckBrowser.refresh()
         return (True, None)

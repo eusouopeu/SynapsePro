@@ -629,6 +629,18 @@ class SettingsDialog(QDialog):
         for key, text, desc in features:
             self.add_checkbox(key, text, layout, desc)
 
+        layout.addSpacing(8)
+        self.add_checkbox(
+            "os_notifications_enabled", _("Daily Study Reminder (system notification)"), layout,
+            _("If you haven't studied by 20:00, shows a system notification. "
+              "Anki must be running (even in the background) to fire it."),
+        )
+        self.add_checkbox(
+            "dashboard_theme_schedule_enabled", _("Scheduled Dark Theme"), layout,
+            _("Automatically switches Anki to dark theme from 20:00 to 07:00, "
+              "independent of the manual night-mode toggle."),
+        )
+
         minimal_cb = self.checkboxes["minimal_dashboard_enabled"]
         widget_keys = [key for key, _text, _desc in features]
 

@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta
 import time
 import json
+import math
 import html as _html_mod
 from aqt import mw
 
@@ -53,6 +54,28 @@ def _get_rollover_hour() -> int:
 def anki_today():
     """Today as an 'Anki day' (a day runs from rollover to rollover)."""
     return (datetime.now() - timedelta(hours=_get_rollover_hour())).date()
+
+
+def _get_week_reviews_count(deck_ids=None):
+    """Reviews since the start of the current (Mon-Sun) week, optionally
+    restricted to deck_ids. Backs the per-deck weekly goal line."""
+    if not mw or not mw.col:
+        return 0
+    try:
+        today = anki_today()
+        week_start_date = today - timedelta(days=today.weekday())
+        start_dt = (datetime.combine(week_start_date, datetime.min.time())
+                    + timedelta(hours=_get_rollover_hour()))
+        start_ms = int(start_dt.timestamp() * 1000)
+        deck_sql, params = "", [start_ms]
+        if deck_ids:
+            placeholders = ",".join("?" * len(deck_ids))
+            deck_sql = f" AND cid IN (SELECT id FROM cards WHERE did IN ({placeholders}))"
+            params.extend(deck_ids)
+        return mw.col.db.scalar(
+            f"SELECT COUNT(*) FROM revlog WHERE id >= ? AND ease > 0{deck_sql}", *params) or 0
+    except Exception:
+        return 0
 
 
 def get_deck_and_children_ids(deck_id):
@@ -304,6 +327,98 @@ def _build_mini_chart(deck_ids=None):
     return svg + axis_html + tooltip_html + script, avg_daily
 
 
+HEATMAP_WEEKS = 52
+
+
+def _build_year_heatmap_svg(deck_ids=None):
+    """GitHub-style activity heatmap: 53 week-columns x 7 day-rows covering
+    roughly the last year, Monday-aligned so week columns line up cleanly.
+    Colour buckets are relative to the busiest day in the window, same
+    convention as the 30-day sparkline."""
+    today = anki_today()
+    raw_start = today - timedelta(days=HEATMAP_WEEKS * 7 + 6)
+    start = raw_start - timedelta(days=raw_start.weekday())  # snap back to Monday
+    total_days = (today - start).days + 1
+    counts = get_daily_review_counts(since_days=total_days + 2, deck_ids=deck_ids)
+    vmax = max(counts.values(), default=0) or 1
+
+    CELL, GAP = 11, 2
+    STEP = CELL + GAP
+    OPACITY_BY_BUCKET = [0.10, 0.30, 0.5, 0.75, 1.0]
+
+    cells = []
+    month_labels = []
+    last_month = None
+    col = 0
+    d = start
+    while d <= today:
+        row = d.weekday()  # 0=Mon .. 6=Sun
+        count = counts.get(d.isoformat(), 0)
+        bucket = 0 if count <= 0 else min(4, max(1, math.ceil((count / vmax) * 4)))
+        x, y = col * STEP, row * STEP
+        cells.append(
+            f'<rect class="heatmap-cell" x="{x}" y="{y}" width="{CELL}" height="{CELL}" rx="2" '
+            f'fill="var(--main-blue)" fill-opacity="{OPACITY_BY_BUCKET[bucket]}" '
+            f'data-date="{d.isoformat()}" data-count="{count}"/>'
+        )
+        if row == 0 and d.month != last_month:
+            month_labels.append((col, d.strftime("%b")))
+            last_month = d.month
+        if row == 6:
+            col += 1
+        d += timedelta(days=1)
+    n_weeks = col + 1
+
+    W = n_weeks * STEP
+    H = 7 * STEP + 16
+    month_svg = "".join(
+        f'<text x="{c * STEP}" y="10" font-size="9" fill="var(--text-color-light)">{m}</text>'
+        for c, m in month_labels
+    )
+    grid_svg = f'<g transform="translate(0,16)">{"".join(cells)}</g>'
+    return (f'<svg class="heatmap-svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
+            f'xmlns="http://www.w3.org/2000/svg">{month_svg}{grid_svg}</svg>')
+
+
+FORECAST_DAYS = 7
+
+
+def _get_due_forecast(deck_ids=None):
+    """Cards due on each of the next FORECAST_DAYS days (today included).
+    Mirrors the technique Anki's own 'Future Due' graph uses: `due` on a
+    review/day-learning queue card is a day offset from the collection's
+    creation date. `col.sched.today` is the scheduler's own day-offset
+    counter (preferred); col.crt-based math is a fallback for older Anki
+    builds where that attribute might not exist."""
+    if not mw or not mw.col:
+        return [0] * FORECAST_DAYS
+    try:
+        try:
+            today_offset = int(mw.col.sched.today)
+        except Exception:
+            crt_date = datetime.fromtimestamp(int(mw.col.crt)).date()
+            today_offset = (anki_today() - crt_date).days
+        deck_sql, params = "", []
+        if deck_ids:
+            placeholders = ",".join("?" * len(deck_ids))
+            deck_sql = f" AND did IN ({placeholders})"
+            params = list(deck_ids)
+        rows = mw.col.db.all(
+            "SELECT due, COUNT(*) FROM cards WHERE queue IN (2, 3) "
+            f"AND due >= ? AND due < ?{deck_sql} GROUP BY due",
+            today_offset, today_offset + FORECAST_DAYS, *params,
+        )
+        counts = [0] * FORECAST_DAYS
+        for due, n in rows:
+            idx = due - today_offset
+            if 0 <= idx < FORECAST_DAYS:
+                counts[idx] = n
+        return counts
+    except Exception as e:
+        print(f"SynapsePro: due forecast query failed: {e}")
+        return [0] * FORECAST_DAYS
+
+
 def _revlog_period_totals(start_ts, end_ts=None, deck_ids=None):
     """Aggregate revlog totals over a (start_ts, end_ts] ms window (end_ts=None
     means "up to now"), optionally restricted to deck_ids (subtree)."""
@@ -333,6 +448,43 @@ def _revlog_period_totals(start_ts, end_ts=None, deck_ids=None):
     correct_reviews, total_reviews, correct_cards, total_cards, total_ms = row or (0, 0, 0, 0, 0)
     return (correct_reviews or 0, total_reviews or 0, correct_cards or 0,
             total_cards or 0, total_ms or 0)
+
+
+MIN_HOUR_SAMPLE = 20  # minimum reviews in an hour bucket before trusting its accuracy
+
+
+def _get_best_study_hour(deck_ids=None):
+    """(hour, accuracy_pct, sample_count) for the local hour-of-day with the
+    highest accuracy across the whole review history, requiring a minimum
+    sample size so a single lucky/unlucky session can't produce a false
+    signal. Returns None if no hour has enough data yet. Uses plain local
+    wall-clock hour (not the Anki-day rollover) — this is about time-of-day
+    performance, not day bucketing."""
+    if not mw or not mw.col:
+        return None
+    deck_sql, params = "", []
+    if deck_ids:
+        placeholders = ",".join("?" * len(deck_ids))
+        deck_sql = f" AND cid IN (SELECT id FROM cards WHERE did IN ({placeholders}))"
+        params = list(deck_ids)
+    try:
+        rows = mw.col.db.all(
+            "SELECT strftime('%H', id/1000, 'unixepoch', 'localtime') AS hr, "
+            "SUM(CASE WHEN ease > 1 THEN 1 ELSE 0 END), COUNT(*) "
+            f"FROM revlog WHERE ease > 0{deck_sql} GROUP BY hr",
+            *params,
+        )
+    except Exception as e:
+        print(f"SynapsePro: best-hour query failed: {e}")
+        return None
+    best = None
+    for hr_str, correct, total in rows:
+        if not total or total < MIN_HOUR_SAMPLE:
+            continue
+        acc = (correct or 0) / total * 100.0
+        if best is None or acc > best[1]:
+            best = (int(hr_str), acc, total)
+    return best
 
 
 def _delta_points(current, previous):
@@ -428,7 +580,14 @@ def get_statistics_data(stats_days=7, deck_id=None):
         prev_chart_start, prev_chart_end, *deck_params) or 0
     prev_avg_daily_reviews = (prev_chart_reviews / CHART_DAYS) if CHART_DAYS else None
 
+    best_hour = _get_best_study_hour(deck_ids=deck_ids)
+    year_heatmap_svg = _build_year_heatmap_svg(deck_ids=deck_ids)
+    due_forecast = _get_due_forecast(deck_ids=deck_ids)
+
     result = {
+        "best_hour": best_hour,
+        "year_heatmap_svg": year_heatmap_svg,
+        "due_forecast": due_forecast,
         "chart_html": chart_html,
         "avg_daily_reviews": avg_daily_reviews,
         "avg_daily_delta_pct": _delta_percent(avg_daily_reviews, prev_avg_daily_reviews),
@@ -515,7 +674,80 @@ def _format_delta_badge(value, suffix, tooltip=""):
     return f'<span class="stat-delta {cls}"{tip_attr}>{arrow} {sign}{value:.0f}{suffix}</span>'
 
 
-def render_widget_html_internal(stats):
+def _render_deck_goal_line(deck_id, target):
+    """Slim row under the toolbar: either an invite to set a weekly goal for
+    the currently filtered deck, or its live progress once one is set."""
+    label_set_goal = _("Set weekly goal for this deck")
+    label_edit_goal = _("Edit")
+    if not target:
+        return (
+            '<div class="deck-goal-line">'
+            f'<span class="deck-goal-set-link" onclick="pycmd(\'pycmd:synapsepro:deck_goal_settings\')">'
+            f'🎯 {label_set_goal}</span></div>'
+        )
+    deck_ids = get_deck_and_children_ids(deck_id)
+    current = _get_week_reviews_count(deck_ids)
+    pct = max(0.0, min(100.0, (current / target) * 100.0))
+    label_progress = _("{} / {} this week").format(current, target)
+    return f'''
+    <div class="deck-goal-line">
+        <span>🎯 {label_progress}</span>
+        <div class="deck-goal-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{pct:.0f}">
+            <div class="deck-goal-bar-fill" style="width:{pct:.1f}%;"></div>
+        </div>
+        <span class="deck-goal-set-link" onclick="pycmd('pycmd:synapsepro:deck_goal_settings')">{label_edit_goal}</span>
+    </div>
+    '''
+
+
+def _render_best_hour_insight(best_hour):
+    """Slim insight card: the local hour-of-day the user tends to answer
+    most accurately, once there's enough data to say so with confidence."""
+    if not best_hour:
+        return ""
+    hour, acc, total = best_hour
+    hour_label = f"{hour:02d}h–{(hour + 1) % 24:02d}h"
+    text = _("You tend to perform best between {} ({:.0f}% accuracy, based on {} reviews).").format(
+        hour_label, acc, total)
+    return f'''
+    <div class="best-hour-insight">
+        <span aria-hidden="true">💡</span>
+        <span>{text}</span>
+    </div>
+    '''
+
+
+def _render_forecast_strip(counts):
+    """Compact 7-day bar strip of upcoming due cards, so the user can spot a
+    workload spike before it hits."""
+    if not counts or not any(counts):
+        return ""
+    today = anki_today()
+    vmax = max(counts) or 1
+    label_title = _("Next {} Days").format(len(counts))
+    label_today = _("Today")
+    bars = []
+    for i, c in enumerate(counts):
+        d = today + timedelta(days=i)
+        day_label = label_today if i == 0 else d.strftime("%a")
+        h = max(4, int((c / vmax) * 40))
+        date_str = d.strftime("%d.%m.%Y")
+        bars.append(f'''
+        <div class="forecast-bar-col" title="{date_str}: {c}">
+            <div class="forecast-bar-count">{c}</div>
+            <div class="forecast-bar" style="height:{h}px;"></div>
+            <div class="forecast-bar-label">{day_label}</div>
+        </div>
+        ''')
+    return f'''
+    <div class="forecast-strip">
+        <h3 class="subtle-title" style="margin:0 0 8px 0;">{label_title}</h3>
+        <div class="forecast-bars-row">{"".join(bars)}</div>
+    </div>
+    '''
+
+
+def render_widget_html_internal(stats, deck_goal_target=None):
     """Interne Funktion zum Bauen des HTMLs."""
     retention_val = stats['retention_percent']
     new_cards_val = stats['new_cards_percent']
@@ -551,6 +783,7 @@ def render_widget_html_internal(stats):
     retention_color = MAIN_BLUE
 
     tooltip_consistency = _("Reviews per day (last 30 days). The best day in this period is the top of the curve.")
+    tooltip_consistency_full = tooltip_consistency + " " + _("Click for the full-year view.")
     tooltip_avg_daily = _("Average cards reviewed per day over the last 30 days.")
     tooltip_efficiency = _("Cards per minute ({}). Time capped at 45s/card.").format(period_text)
     tooltip_accuracy = _("Correct answers: {:.1f}% ({}).").format(acc_real, period_text)
@@ -571,6 +804,7 @@ def render_widget_html_internal(stats):
     label_studied = _("Studied Cards")
     label_all_decks = _("All decks")
     label_export = _("Export")
+    label_year_activity = _("Yearly Activity")
 
     deck_options_html = f'<option value="0"{"" if selected_deck_id else " selected"}>{label_all_decks}</option>'
     for did, name in get_deck_filter_options():
@@ -649,6 +883,119 @@ def render_widget_html_internal(stats):
         }}
         .stats-deck-filter:hover, .stats-export-btn:hover {{
             opacity: 0.85;
+        }}
+        .deck-goal-line {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            max-width: {WIDGET_MAX_WIDTH};
+            margin: -2px auto 8px auto;
+            padding: 0 2px;
+            box-sizing: border-box;
+            font-size: 12px;
+            color: var(--text-color-light);
+            animation: spFadeIn 220ms ease-out;
+        }}
+        .deck-goal-bar {{
+            flex: 1 1 auto;
+            min-width: 24px;
+            height: 6px;
+            background-color: var(--progress-bg);
+            border-radius: 4px;
+            overflow: hidden;
+        }}
+        .deck-goal-bar-fill {{
+            height: 100%;
+            background-color: var(--main-blue);
+            border-radius: 4px;
+            transition: width 0.5s ease-out;
+        }}
+        .deck-goal-set-link {{
+            cursor: pointer;
+            text-decoration: underline;
+            white-space: nowrap;
+            flex: 0 0 auto;
+        }}
+        .deck-goal-set-link:hover {{
+            opacity: 0.8;
+        }}
+        #year-heatmap-modal {{
+            display: none; position: fixed; z-index: 10000; left: 0; top: 0;
+            width: 100%; height: 100%; background: rgba(0,0,0,0.45);
+            align-items: center; justify-content: center;
+        }}
+        .heatmap-modal-box {{
+            background-color: var(--stat-bg); border-radius: 12px; padding: 20px 24px;
+            max-width: 92vw; max-height: 85vh; overflow: auto; position: relative;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4); border: 1px solid var(--stat-border);
+        }}
+        .heatmap-modal-close {{
+            position: absolute; top: 10px; right: 14px; cursor: pointer;
+            font-size: 16px; color: var(--text-color-light); user-select: none;
+        }}
+        .heatmap-modal-close:hover {{ color: var(--text-color); }}
+        .heatmap-tooltip {{
+            position: absolute; transform: translate(-50%, -130%);
+            background-color: var(--stat-bg); border: 1px solid var(--stat-border);
+            color: var(--text-color); font-size: 11px; line-height: normal;
+            padding: 3px 6px; border-radius: 4px; white-space: nowrap;
+            pointer-events: none; opacity: 0; transition: opacity 0.1s ease;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.15); z-index: 5;
+        }}
+        .forecast-strip {{
+            max-width: {WIDGET_MAX_WIDTH};
+            margin: 12px auto 0 auto;
+            padding: 12px 16px;
+            border-radius: 12px;
+            box-sizing: border-box;
+            background-color: var(--stat-bg);
+            border: 1px solid var(--stat-border);
+            animation: spFadeIn 220ms ease-out;
+        }}
+        .forecast-bars-row {{
+            display: flex;
+            align-items: flex-end;
+            gap: 8px;
+            height: 68px;
+        }}
+        .forecast-bar-col {{
+            flex: 1 1 0;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 2px;
+        }}
+        .forecast-bar-count {{
+            font-size: 10px;
+            color: var(--text-color-light);
+        }}
+        .forecast-bar {{
+            width: 100%;
+            max-width: 22px;
+            background-color: var(--main-blue);
+            border-radius: 3px 3px 0 0;
+            opacity: 0.85;
+        }}
+        .forecast-bar-label {{
+            font-size: 10px;
+            color: var(--text-color-light);
+            white-space: nowrap;
+        }}
+        .best-hour-insight {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            max-width: {WIDGET_MAX_WIDTH};
+            margin: 12px auto 0 auto;
+            padding: 8px 14px;
+            border-radius: 10px;
+            box-sizing: border-box;
+            font-size: 12px;
+            background-color: var(--progress-bg);
+            color: var(--text-color-light);
+            animation: spFadeIn 220ms ease-out;
         }}
         .stat-delta {{
             font-size: 11px;
@@ -835,6 +1182,42 @@ def render_widget_html_internal(stats):
     </style>
     """
 
+    deck_goal_html = _render_deck_goal_line(selected_deck_id, deck_goal_target) if selected_deck_id else ""
+    best_hour_html = _render_best_hour_insight(stats.get('best_hour'))
+    forecast_html = _render_forecast_strip(stats.get('due_forecast'))
+    year_heatmap_html = f'''
+    <div id="year-heatmap-modal" onclick="if(event.target===this){{this.style.display='none';}}">
+        <div class="heatmap-modal-box">
+            <span class="heatmap-modal-close"
+                  onclick="document.getElementById('year-heatmap-modal').style.display='none';">✕</span>
+            <h3 style="margin:0 0 12px 0; color:var(--text-color); font-size:15px;">{label_year_activity}</h3>
+            <div style="overflow-x:auto;">{stats.get('year_heatmap_svg', '')}</div>
+            <div class="heatmap-tooltip"></div>
+        </div>
+    </div>
+    <script>
+    (function() {{
+        var modal = document.getElementById('year-heatmap-modal');
+        if (!modal) return;
+        var svg = modal.querySelector('svg.heatmap-svg');
+        var tip = modal.querySelector('.heatmap-tooltip');
+        if (!svg || !tip) return;
+        svg.addEventListener('mousemove', function(e) {{
+            var t = e.target;
+            if (t && t.classList && t.classList.contains('heatmap-cell')) {{
+                tip.textContent = t.dataset.date + ': ' + t.dataset.count;
+                tip.style.left = (e.offsetX + 10) + 'px';
+                tip.style.top = (e.offsetY + 26) + 'px';
+                tip.style.opacity = '1';
+            }} else {{
+                tip.style.opacity = '0';
+            }}
+        }});
+        svg.addEventListener('mouseleave', function() {{ tip.style.opacity = '0'; }});
+    }})();
+    </script>
+    '''
+
     html = f"""
     <div class="stats-toolbar">
         <select class="stats-deck-filter" title="{tooltip_deck_filter}"
@@ -845,13 +1228,15 @@ def render_widget_html_internal(stats):
         <button type="button" class="stats-export-btn" title="{tooltip_export}"
                 onclick="pycmd('pycmd:synapsepro:export_stats_image')">⇩ {label_export}</button>
     </div>
+    {deck_goal_html}
     <div class="stats-widget-container">
         <!-- Info button: opens a dialog explaining every statistic -->
         <div class="stats-info-btn" title="{tooltip_info}" onclick="pycmd('pycmd:synapsepro:stats_info')">i</div>
 
         <!-- Block 1: Consistency (activity sparkline) -->
         <div class="stat-block">
-            <h3 class="subtle-title" title="{tooltip_consistency}" style="margin:0;">{label_consistency}</h3>
+            <h3 class="subtle-title" title="{tooltip_consistency_full}" style="margin:0; cursor:pointer;"
+                onclick="document.getElementById('year-heatmap-modal').style.display='flex';">{label_consistency}</h3>
             <div style="flex: 1 1 auto;"></div>
             <div class="spark-wrap">
                 {stats['chart_html']}
@@ -906,17 +1291,20 @@ def render_widget_html_internal(stats):
         </div>
 
     </div>
+    {forecast_html}
+    {best_hour_html}
+    {year_heatmap_html}
     """
 
     return css + html
 
-def render_statistics_widget_html(stats_days=7, deck_id=None):
+def render_statistics_widget_html(stats_days=7, deck_id=None, deck_goal_target=None):
     """
     Hauptfunktion, die von __init__.py aufgerufen wird.
     Akzeptiert den Zeitraum und gibt das HTML zurück.
     """
     data = get_statistics_data(stats_days, deck_id=deck_id)
-    return render_widget_html_internal(data)
+    return render_widget_html_internal(data, deck_goal_target=deck_goal_target)
 
 
 def show_statistics_info_dialog(parent=None, stats_days=7):

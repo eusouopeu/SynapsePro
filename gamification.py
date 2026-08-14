@@ -51,6 +51,7 @@ XP_PER_MINUTE_STUDIED = 10
 XP_FOR_DAILY_CHALLENGE_BASE = 120
 XP_FOR_DAILY_CHALLENGE_PER_LEVEL = 5
 XP_PER_STREAK_DAY = 20
+XP_PER_POMODORO_MINUTE = 5
 XP_LEVEL_BASE = 100
 XP_LEVEL_FACTOR = 1.065
 
@@ -639,6 +640,77 @@ class GamificationManager:
         except Exception:
             return 0
 
+    def get_reviews_this_week_count(self, deck_ids: Optional[List[int]] = None) -> int:
+        """Number of cards reviewed since the start of the current (Mon-Sun)
+        week, using the same Anki-day rollover boundary as `_day_start_ms`.
+        Optionally restricted to a deck subtree for the per-deck goal card."""
+        if not mw or not mw.col:
+            return 0
+        try:
+            today = _anki_today()
+            week_start_date = today - timedelta(days=today.weekday())
+            start_dt = (datetime.combine(week_start_date, datetime.min.time())
+                        + timedelta(hours=self._get_rollover_hour()))
+            start_ms = int(start_dt.timestamp() * 1000)
+            deck_sql, params = "", [start_ms]
+            if deck_ids:
+                placeholders = ",".join("?" * len(deck_ids))
+                deck_sql = f" AND cid IN (SELECT id FROM cards WHERE did IN ({placeholders}))"
+                params.extend(deck_ids)
+            return mw.col.db.scalar(
+                f"SELECT COUNT(*) FROM revlog WHERE id >= ? AND ease > 0{deck_sql}", *params) or 0
+        except Exception:
+            return 0
+
+    def get_weekly_goal_html(self, target: int) -> str:
+        """Full-width weekly-goal card, shown only once the user has set a
+        non-zero target via the card's gear icon (WeeklyGoalConfigDialog)."""
+        if target <= 0:
+            return ""
+        current = self.get_reviews_this_week_count()
+        pct = max(0.0, min(100.0, (current / target) * 100.0))
+        achieved = current >= target
+        _cl = _palette(False)
+        _cd = _palette(True)
+        bar_color = (_cl["green"] if not is_night_mode else _cd["green"]) if achieved else "var(--primary-blue)"
+        label_title = _("Weekly Goal") + (" 🎉" if achieved else "")
+        label_progress = _("{} / {} cards this week").format(current, target)
+        gear_tip = _("Configure Weekly Goal")
+        settings_icon_uri = _get_settings_icon_data_uri()
+        if settings_icon_uri:
+            gear_html = (
+                f'<img src="{settings_icon_uri}" title="{gear_tip}" '
+                f'onclick="event.stopPropagation(); pycmd(\'pycmd:synapsepro:weekly_goal_settings\')" '
+                f'style="position:absolute; top:14px; right:14px; width:15px; height:15px; '
+                f'opacity:0.55; cursor:pointer; transition:opacity 0.2s ease;" '
+                f'onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.55">'
+            )
+        else:
+            gear_html = (
+                f'<span title="{gear_tip}" '
+                f'onclick="event.stopPropagation(); pycmd(\'pycmd:synapsepro:weekly_goal_settings\')" '
+                f'style="position:absolute; top:12px; right:12px; font-size:13px; '
+                f'opacity:0.55; cursor:pointer; user-select:none;" '
+                f'onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.55">⚙</span>'
+            )
+        return f'''
+        <div class="gamewidget weekly-goal-widget" style="max-width:860px; width:100%; margin:0 auto 12px auto;
+                    box-sizing:border-box; padding:15px; position:relative;">
+            {gear_html}
+            <div style="display:flex; justify-content:space-between; align-items:baseline; padding-right:22px;">
+                <h5 style="font-size:0.95em; font-weight:bold; color: var(--text-color); margin:0;">{label_title}</h5>
+                <span style="font-size:0.8em; color: var(--text-color-light); white-space:nowrap;">{label_progress}</span>
+            </div>
+            <div class="progress-bar-outer" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+                 aria-valuenow="{pct:.0f}" aria-label="{label_title}"
+                 style="width:100%; height:8px; background-color: var(--progress-bg); border-radius:8px;
+                        overflow:hidden; margin-top:8px;">
+                <div style="height:100%; width:{pct:.1f}%; background-color:{bar_color}; border-radius:8px;
+                            transition:width 0.3s ease-out;"></div>
+            </div>
+        </div>
+        '''
+
     def get_reviews_this_month_count(self) -> int:
         """Number of cards reviewed since the start of the current calendar
         month, using the same Anki-day rollover boundary as `_day_start_ms`."""
@@ -879,6 +951,15 @@ class GamificationManager:
         self._force_refresh("reset_all_data")
         showInfo(_("{} data reset.").format(ADDON_NAME))
         return True
+
+    def award_pomodoro_xp(self, work_minutes: int) -> int:
+        """XP bonus for a completed Pomodoro focus session. Separate from the
+        review-time XP awarded in check_and_update_streak_and_time_xp, since a
+        Pomodoro need not involve any Anki reviews (reading, writing, etc.)."""
+        amount = max(0, int(work_minutes) * XP_PER_POMODORO_MINUTE)
+        if amount > 0 and self.add_xp(amount, "Pomodoro"):
+            return amount
+        return 0
 
     def get_streak_risk_banner_html(self) -> str:
         """Small dismissible banner nudging the user when an active streak

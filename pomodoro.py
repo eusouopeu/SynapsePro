@@ -160,8 +160,10 @@ def calculate_current_streak(stats: dict) -> int:
     return streak
 
 
-def record_pomodoro_completed():
-    """Record one finished Pomodoro work session into statistics."""
+def record_pomodoro_completed() -> int:
+    """Record one finished Pomodoro work session into statistics, award the
+    gamification XP bonus for it, and return the XP gained (0 if the
+    gamification manager isn't available)."""
     work_mins = work_duration // 60 if work_duration > 0 else constants.DEFAULT_POMODORO_CONFIG["work_minutes"]
     stats = load_pomodoro_stats()
     today = datetime.date.today().isoformat()
@@ -182,6 +184,15 @@ def record_pomodoro_completed():
 
     save_pomodoro_stats(stats)
     print(f"{constants.ADDON_NAME_POMODORO}: Pomodoro recorded. Total: {stats['total_pomodoros']}")
+
+    xp_gained = 0
+    try:
+        gm = getattr(mw, 'gamification_manager', None) if mw else None
+        if gm:
+            xp_gained = gm.award_pomodoro_xp(work_mins)
+    except Exception as e:
+        print(f"{constants.ADDON_NAME_POMODORO}: Error awarding Pomodoro XP: {e}")
+    return xp_gained
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -941,7 +952,9 @@ def handle_state_transition(finished_state=None, skipped_state=None):
         # Only record stats for natural completion (not user skips)
         if finished_state is not None:
             try:
-                record_pomodoro_completed()
+                xp_gained = record_pomodoro_completed()
+                if xp_gained > 0:
+                    notification += _("\n+{} XP").format(xp_gained)
             except Exception as e:
                 print(f"{constants.ADDON_NAME_POMODORO}: Error recording stats: {e}")
 

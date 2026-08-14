@@ -20,7 +20,7 @@ from aqt.qt import (
     QTextEdit,
     QApplication,
     QDesktopServices, QUrl,
-    QComboBox, QRadioButton, QButtonGroup, QStackedWidget,
+    QComboBox, QRadioButton, QButtonGroup, QStackedWidget, QSpinBox,
 )
 from aqt.utils import showInfo, tooltip
 
@@ -1630,6 +1630,108 @@ class ChallengeConfigDialog(QDialog):
                 "weekday": weekday,
             }
             self.gm.save_data()
+        self.accept()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WeeklyGoalConfigDialog — set (or clear) the collection-wide weekly cards goal
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WeeklyGoalConfigDialog(QDialog):
+    """Simple popup to set (or disable) the weekly cards goal. Reads/writes
+    nothing itself — the caller passes the current value in and reads
+    `.value` back out after exec() so addon_settings stays owned by
+    __init__.py (avoids a circular import back into it from here)."""
+
+    def __init__(self, current_target: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(_("Weekly Goal"))
+        self.setMinimumWidth(360)
+        self.setStyleSheet(_build_style(is_night_mode))
+        self.value = current_target
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        header = QLabel(_("Weekly Goal"))
+        header.setObjectName("HeaderLabel")
+        layout.addWidget(header)
+
+        hint = QLabel(_("How many cards would you like to review each week? Set to 0 to disable."))
+        hint.setObjectName("SubLabel")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        form = QFormLayout()
+        self.spin = QSpinBox()
+        self.spin.setRange(0, 20000)
+        self.spin.setSingleStep(10)
+        self.spin.setValue(max(0, int(current_target or 0)))
+        form.addRow(_("Cards per week") + ":", self.spin)
+        layout.addLayout(form)
+
+        layout.addStretch()
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self._save_and_close)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def _save_and_close(self):
+        self.value = self.spin.value()
+        self.accept()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DeckGoalConfigDialog — set (or clear) a weekly reviews goal for one deck
+# ─────────────────────────────────────────────────────────────────────────────
+
+class DeckGoalConfigDialog(QDialog):
+    """Simple popup to set (or clear) a weekly reviews goal for a single
+    deck. Same ownership convention as WeeklyGoalConfigDialog: the caller
+    reads `.value` back after exec()."""
+
+    def __init__(self, deck_name: str, current_target: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(_("Deck Goal"))
+        self.setMinimumWidth(380)
+        self.setStyleSheet(_build_style(is_night_mode))
+        self.value = current_target
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        header = QLabel(_("Deck Goal"))
+        header.setObjectName("HeaderLabel")
+        layout.addWidget(header)
+
+        sub = QLabel(deck_name)
+        sub.setObjectName("SubLabel")
+        sub.setWordWrap(True)
+        layout.addWidget(sub)
+
+        hint = QLabel(_("How many cards from this deck would you like to review each week? Set to 0 to remove the goal."))
+        hint.setObjectName("SubLabel")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        form = QFormLayout()
+        self.spin = QSpinBox()
+        self.spin.setRange(0, 20000)
+        self.spin.setSingleStep(5)
+        self.spin.setValue(max(0, int(current_target or 0)))
+        form.addRow(_("Cards per week") + ":", self.spin)
+        layout.addLayout(form)
+
+        layout.addStretch()
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self._save_and_close)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def _save_and_close(self):
+        self.value = self.spin.value()
         self.accept()
 
 
