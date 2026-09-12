@@ -160,8 +160,8 @@ CK_CARD_CONTEXT = _PFX + "card_context_enabled"
 
 _DEFAULT_CHIPS: Dict[str, Any] = {
     "builtin":   {"short": True, "concise": True, "detailed": True,
-                  "mcq": True, "mnemonic": True},
-    "shortcuts": {"short": "", "concise": "", "detailed": "", "mcq": "", "mnemonic": ""},
+                  "mcq": True, "mnemonic": True, "mistake": True},
+    "shortcuts": {"short": "", "concise": "", "detailed": "", "mcq": "", "mnemonic": "", "mistake": ""},
     "custom":    [],
 }
 
@@ -923,6 +923,38 @@ def _get_card_content() -> Optional[str]:
         return None
 
 
+def _get_card_struggle_note() -> str:
+    """A short, factual note on how much trouble the card currently open in
+    the reviewer has caused, read straight from the card's own scheduling
+    counters (``lapses``/``reps`` — no revlog scan needed). Backs the "Why
+    did I get this wrong?" quick action so its explanation engages with the
+    user's actual history on this specific card instead of guessing.
+
+    Empty string if there's no reviewer card, or it has never lapsed —
+    callers fall back to a generic phrasing in that case.
+    """
+    if not _anki_ok or not mw or mw.state != "review":
+        return ""
+    try:
+        rev: Any = mw.reviewer
+        card = rev.card if rev else None
+        if not card:
+            return ""
+        lapses = int(getattr(card, "lapses", 0) or 0)
+        reps = int(getattr(card, "reps", 0) or 0)
+        if lapses <= 0:
+            return ""
+        if reps > 0:
+            return (
+                f"This card has been marked 'Again' {lapses} time(s) out of "
+                f"{reps} total review(s) so far."
+            )
+        return f"This card has been marked 'Again' {lapses} time(s)."
+    except Exception as e:
+        log.error(f"AI Assistant: _get_card_struggle_note error: {e}")
+        return ""
+
+
 def _clean_card_text(raw: Any) -> str:
     """Convert an Anki field to compact plain text without scripts or media."""
     if raw is None:
@@ -992,6 +1024,24 @@ def _lang_suffix() -> str:
     return LANG_SUFFIX.get(_cfg_get(CK_LANGUAGE, "English"), "in English")
 
 
+def _build_mistake_prompt(content: str, lang: str) -> str:
+    """Prompt for the "Why did I get this wrong?" quick action. Folds in
+    _get_card_struggle_note() (the card's real lapse count) when there is
+    one, so the explanation engages with an actual pattern of mistakes
+    rather than a generic recap of the card."""
+    struggle_note = _get_card_struggle_note()
+    if struggle_note:
+        return (
+            f'This Anki flashcard is proving difficult: "{content}". {struggle_note} '
+            f"Explain {lang} what makes this specific fact easy to confuse or forget, "
+            f"and suggest one concrete, different way to remember it next time."
+        )
+    return (
+        f'Explain "{content}" (Anki card) {lang}, focusing on the part that is most '
+        f"commonly confused or forgotten, and suggest one way to remember it better."
+    )
+
+
 def _build_chip_prompt(action: str, content: str) -> str:
     lang = _lang_suffix()
     prompts = {
@@ -1017,6 +1067,8 @@ def _build_chip_prompt(action: str, content: str) -> str:
             f"Only the mnemonic, no extra explanation."
         ),
     }
+    if action == "mistake":
+        return _build_mistake_prompt(content, lang)
     if action in prompts:
         return prompts[action]
     if action == "own":

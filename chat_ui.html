@@ -720,6 +720,7 @@ var BUILTIN_CHIPS = [
   { id:'detailed', label:'Detailed' },
   { id:'mcq',      label:'Quiz Me'  },
   { id:'mnemonic', label:'Mnemonic' },
+  { id:'mistake',  label:'Why did I get this wrong?' },
 ];
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -728,8 +729,8 @@ var chipsEnabled = false;
 var cardContextEnabled   = false;
 var cardContextAvailable = false;
 var chipConfig   = {
-  builtin:   { short:true, concise:true, detailed:true, mcq:true, mnemonic:true },
-  shortcuts: { short:'', concise:'', detailed:'', mcq:'', mnemonic:'' },
+  builtin:   { short:true, concise:true, detailed:true, mcq:true, mnemonic:true, mistake:true },
+  shortcuts: { short:'', concise:'', detailed:'', mcq:'', mnemonic:'', mistake:'' },
   custom:    []
 };
 
