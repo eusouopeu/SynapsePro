@@ -12,6 +12,17 @@ import urllib.parse
 from . import constants
 
 try:
+    from .logging_util import get_logger
+except ImportError:
+    from logging_util import get_logger  # type: ignore
+log = get_logger(__name__)
+
+try:
+    from .json_state import atomic_write_json, read_json_file
+except ImportError:
+    from json_state import atomic_write_json, read_json_file  # type: ignore
+
+try:
     from .locales import _
 except ImportError:
     def _(text):  # type: ignore
@@ -27,10 +38,10 @@ try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
     from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage, QWebEngineSettings
     WebAction = QWebEnginePage.WebAction
-    print("Website Sidebar: Using Qt6 components")
+    log.debug("Website Sidebar: Using Qt6 components")
     _qt_available = True
 except ImportError as e:
-    print(f"Website Sidebar Error: Could not import necessary PyQt components. {e}")
+    log.error(f"Website Sidebar Error: Could not import necessary PyQt components. {e}")
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton = object, object, object, object
     QInputDialog, QDockWidget, QSizePolicy, QMessageBox = object, object, object, object
     QUrl, QTimer, QSize, Qt = object, object, object, None
@@ -46,7 +57,7 @@ try:
     _svg_available = True
 except Exception as _e_svg:
     QSvgRenderer = object  # type: ignore
-    print(f"Website Sidebar: QtSvg unavailable, using glyph fallback. {_e_svg}")
+    log.debug(f"Website Sidebar: QtSvg unavailable, using glyph fallback. {_e_svg}")
 
 
 # --- Anki Imports ---
@@ -54,7 +65,7 @@ try:
     from aqt import mw, gui_hooks
     from aqt.utils import showInfo, tooltip, qconnect, showWarning
 except ImportError:
-    print("Website Sidebar Error: Could not import aqt modules.")
+    log.error("Website Sidebar Error: Could not import aqt modules.")
     mw = None; showInfo = lambda *a, **k: print("Info:", a); tooltip = lambda *a, **k: print("Tooltip:", a)
     qconnect = lambda *a: None; showWarning = lambda *a, **k: print("Warning:", a)
     gui_hooks = None
@@ -228,7 +239,7 @@ def _make_window_icon(size: int = 16, active: bool = False):
             pass
         return QIcon(pm)
     except Exception as e:
-        print(f"WS Warn: could not build window icon: {e}")
+        log.debug(f"WS Warn: could not build window icon: {e}")
         return None
 
 
@@ -291,7 +302,7 @@ def _install_dark_scrollbar_script(profile) -> None:
             pass
         profile.scripts().insert(script)
     except Exception as e:
-        print(f"WS Warn: could not install scrollbar script: {e}")
+        log.debug(f"WS Warn: could not install scrollbar script: {e}")
 
 
 # --- Module Globals ---
@@ -335,15 +346,12 @@ def _website_state_path() -> Optional[str]:
 
 def _load_website_state() -> Dict:
     path = _website_state_path()
-    if path and os.path.isfile(path):
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                value = json.load(handle)
-            return value if isinstance(value, dict) else {}
-        except Exception as exc:
-            print(f"WS Warn: Could not read local website state: {exc}")
+    value = read_json_file(path)
+    if isinstance(value, dict):
+        return value
 
-    # Migrate older collection-synced browser metadata into profile-local data.
+    # Missing or unreadable state file: migrate older collection-synced
+    # browser metadata into profile-local data instead.
     state: Dict = {}
     if mw and mw.col:
         try:
@@ -361,25 +369,15 @@ def _load_website_state() -> Dict:
                 if callable(remover): remover(key)
                 else: mw.col.set_config(key, None)
         except Exception as exc:
-            print(f"WS Warn: Could not migrate website state: {exc}")
+            log.error(f"WS Warn: Could not migrate website state: {exc}")
     _save_website_state(state)
     return state
 
 
 def _save_website_state(state: Dict) -> None:
     path = _website_state_path()
-    if not path:
-        return
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, indent=2, ensure_ascii=False)
-        os.replace(tmp, path)
-    except Exception as exc:
-        print(f"WS Warn: Could not save local website state: {exc}")
-        try:
-            if os.path.exists(tmp): os.remove(tmp)
-        except OSError: pass
+    if not atomic_write_json(path, state, indent=2, ensure_ascii=False):
+        log.error("WS Warn: Could not save local website state")
 
 def load_custom_sites() -> List[Dict[str, str]]:
     sites = _load_website_state().get("custom_sites")
@@ -533,7 +531,7 @@ def create_website_dock() -> Optional[QDockWidget]:
     global website_main_layout, window_button
 
     if not _qt_available or QDockWidget is object or QWidget is object or QVBoxLayout is object or QHBoxLayout is object or QWebEngineView is object or QWebEngineProfile is object or QPushButton is object or mw is None:
-        print("WS Error: Essential Qt/Anki components missing for dock creation.")
+        log.error("WS Error: Essential Qt/Anki components missing for dock creation.")
         return None
 
     existing_dock = mw.findChild(QDockWidget, constants.WEBSITE_DOCK_OBJECT_NAME)
@@ -551,13 +549,13 @@ def create_website_dock() -> Optional[QDockWidget]:
                  sidebar_webview._urlChangedConnected_ws = True
         
         rebuild_custom_buttons_ui()
-        print(f"WS Info: Re-using existing dock '{constants.WEBSITE_DOCK_OBJECT_NAME}'.")
+        log.debug(f"WS Info: Re-using existing dock '{constants.WEBSITE_DOCK_OBJECT_NAME}'.")
         return sidebar_dock
 
-    print(f"WS Info: Creating new dock '{constants.WEBSITE_DOCK_OBJECT_NAME}'.")
+    log.debug(f"WS Info: Creating new dock '{constants.WEBSITE_DOCK_OBJECT_NAME}'.")
     try:
         if not constants.addon_path:
-            print("WS Error: Addon path not set in constants. Cannot create profile directory.")
+            log.error("WS Error: Addon path not set in constants. Cannot create profile directory.")
             return None
 
         profile_root = mw.pm.profileFolder() if mw and mw.pm else None
@@ -572,18 +570,18 @@ def create_website_dock() -> Optional[QDockWidget]:
             website_profile.setPersistentStoragePath(profile_dir)
             website_profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies)
             website_profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
-            print(f"WS Info: Created/Using persistent profile: {profile_name} at {profile_dir}")
+            log.debug(f"WS Info: Created/Using persistent profile: {profile_name} at {profile_dir}")
         except Exception as e_profile:
-            print(f"WS Warn: Could not create persistent profile (Error: {e_profile}). Falling back to an off-the-record profile.")
+            log.error(f"WS Warn: Could not create persistent profile (Error: {e_profile}). Falling back to an off-the-record profile.")
             if mw: website_profile = QWebEngineProfile(mw)
             else: website_profile = QWebEngineProfile()
             if not website_profile.isOffTheRecord():
-                 print("WS Warn: Fallback profile was not off-the-record. Using global default profile.")
+                 log.debug("WS Warn: Fallback profile was not off-the-record. Using global default profile.")
                  website_profile = QWebEngineProfile.defaultProfile()
-            else: print("WS Info: Using off-the-record (in-memory) profile.")
+            else: log.debug("WS Info: Using off-the-record (in-memory) profile.")
 
         if not website_profile:
-            print("WS FATAL: Could not obtain any QWebEngineProfile.")
+            log.error("WS FATAL: Could not obtain any QWebEngineProfile.")
             return None
 
         _install_dark_scrollbar_script(website_profile)
@@ -699,10 +697,10 @@ def create_website_dock() -> Optional[QDockWidget]:
         sidebar_dock.setWidget(container_widget)
         sidebar_dock.setVisible(False)
         mw.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, sidebar_dock)
-        print(f"WS Info: New dock created and added successfully.")
+        log.debug(f"WS Info: New dock created and added successfully.")
 
     except Exception as e:
-        print(f"WS FATAL: Error during new dock creation: {e}")
+        log.error(f"WS FATAL: Error during new dock creation: {e}")
         traceback.print_exc()
         if sidebar_dock: sidebar_dock.deleteLater(); sidebar_dock = None
         sidebar_webview = None; website_profile = None; button_container_layout = None; nav_button_layout = None
@@ -848,15 +846,15 @@ def toggle_website_dock():
             if sidebar_webview:
                 last_url = load_last_opened_url()
                 if last_url and last_url != "about:blank" and not last_url.startswith("data:text/html"):
-                    print(f"WS Info: Loading last opened URL: {last_url}")
+                    log.debug(f"WS Info: Loading last opened URL: {last_url}")
                     load_url_in_webview(sidebar_webview, last_url)
                 else:
-                    print("WS Info: No last URL found. Loading default start page: Synapse Browser.")
+                    log.debug("WS Info: No last URL found. Loading default start page: Synapse Browser.")
                     load_url_in_webview(sidebar_webview, "https://www.synapse-pro.de/browser")
             else:
-                print("WS Warn: Sidebar webview not available on toggle show.")
+                log.debug("WS Warn: Sidebar webview not available on toggle show.")
     except Exception as e:
-        print(f"WS Error toggling dock visibility: {e}")
+        log.error(f"WS Error toggling dock visibility: {e}")
         traceback.print_exc()
 
 # --- Theme Refresh Function ---
@@ -916,7 +914,7 @@ def cleanup_website_sidebar():
                  sidebar_webview.urlChanged.disconnect(on_webview_url_changed) # type: ignore
             del sidebar_webview._urlChangedConnected_ws
         except (TypeError, RuntimeError, Exception) as e_disc:
-            print(f"WS Info: Could not disconnect urlChanged on cleanup: {e_disc}")
+            log.debug(f"WS Info: Could not disconnect urlChanged on cleanup: {e_disc}")
         except AttributeError: pass
 
     # Anki's main window survives profile switches. Destroy the Qt objects so
@@ -939,7 +937,7 @@ def cleanup_website_sidebar():
     add_button_widget = None; home_button_widget = None; back_button = None; forward_button = None; refresh_button = None
     window_button = None; website_main_layout = None
     custom_button_containers.clear()
-    print(f"{constants.ADDON_NAME_WEBSITE}: Cleaned up references.")
+    log.debug(f"{constants.ADDON_NAME_WEBSITE}: Cleaned up references.")
 
 def search_in_sidebar(text: str):
     """
@@ -976,7 +974,7 @@ def _notify_launcher_dock_opened():
         if inst is not None and hasattr(inst, "sync_dock_button"):
             inst.sync_dock_button(constants.WEBSITE_DOCK_OBJECT_NAME)
     except Exception as e:
-        print(f"WS Info: could not notify launcher about dock open: {e}")
+        log.debug(f"WS Info: could not notify launcher about dock open: {e}")
 
 
 def _execute_search_in_sidebar(text: str):
@@ -1002,7 +1000,7 @@ def _execute_search_in_sidebar(text: str):
             else:
                 if callable(showWarning): showWarning(_("Sidebar Browser not initialized."))
     except Exception as e:
-        print(f"WS Search Error: {e}")
+        log.error(f"WS Search Error: {e}")
         import traceback; traceback.print_exc()
 
 def on_context_menu(webview, menu):
@@ -1039,4 +1037,4 @@ if gui_hooks:
     gui_hooks.editor_will_show_context_menu.append(on_context_menu)
     gui_hooks.webview_will_show_context_menu.append(on_context_menu)
 
-print(f"{constants.ADDON_NAME_WEBSITE}: Module Loaded (Updated with Search)")
+log.debug(f"{constants.ADDON_NAME_WEBSITE}: Module Loaded (Updated with Search)")

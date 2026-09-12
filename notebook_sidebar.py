@@ -39,6 +39,11 @@ except ImportError:
     from logging_util import get_logger  # type: ignore
 log = get_logger(__name__)
 
+try:
+    from .json_state import atomic_write_json, read_json_file
+except ImportError:
+    from json_state import atomic_write_json, read_json_file  # type: ignore
+
 ADDON_NAME_FOR_BRIDGE = "notion_mini"
 DB_FILENAME = "notebook.sqlite"
 DOCK_TITLE = "Notebook"
@@ -659,45 +664,29 @@ def _write_snapshot_recovery(
 ) -> bool:
     """Atomically preserve a valid snapshot when SQLite is temporarily unavailable."""
     path = _snapshot_recovery_path(table, database_path)
-    tmp_path = f"{path}.tmp"
     try:
         data = json.loads(body)
-        payload = {"version": 1, "table": table, "body": data}
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
-        return True
     except Exception as exc:
-        print(f"Notebook {table} recovery save failed: {exc}")
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except OSError:
-            pass
+        log.error(f"Notebook {table} recovery save failed: {exc}")
         return False
+    payload = {"version": 1, "table": table, "body": data}
+    ok = atomic_write_json(path, payload, ensure_ascii=False, separators=(",", ":"), fsync=True)
+    if not ok:
+        log.error(f"Notebook {table} recovery save failed: could not write recovery file")
+    return ok
 
 
 def _load_snapshot_recovery(
     table: str, database_path: Optional[str] = None
 ) -> Optional[str]:
-    try:
-        with open(
-            _snapshot_recovery_path(table, database_path), "r", encoding="utf-8"
-        ) as handle:
-            payload = json.load(handle)
-        if (
-            isinstance(payload, dict)
-            and payload.get("version") == 1
-            and payload.get("table") == table
-        ):
-            body = json.dumps(payload.get("body"), ensure_ascii=False, separators=(",", ":"))
-            return body if _valid_snapshot(table, body) else None
-    except FileNotFoundError:
-        pass
-    except Exception as exc:
-        print(f"Notebook {table} recovery load failed: {exc}")
+    payload = read_json_file(_snapshot_recovery_path(table, database_path))
+    if (
+        isinstance(payload, dict)
+        and payload.get("version") == 1
+        and payload.get("table") == table
+    ):
+        body = json.dumps(payload.get("body"), ensure_ascii=False, separators=(",", ":"))
+        return body if _valid_snapshot(table, body) else None
     return None
 
 
@@ -731,7 +720,7 @@ def _load_latest_snapshot(
         ).fetchone()
         return row[0] if row else fallback
     except Exception as e:
-        print(f"Notebook {table} Load Error: {e}")
+        log.error(f"Notebook {table} Load Error: {e}")
         return fallback
     finally:
         if con is not None:
@@ -765,7 +754,7 @@ def _save_snapshot(
 ) -> bool:
     """Transactionally store a validated snapshot and retain 20 recovery rows."""
     if not _valid_snapshot(table, body):
-        print(f"Notebook {table} Save Error: invalid JSON snapshot rejected")
+        log.error(f"Notebook {table} Save Error: invalid JSON snapshot rejected")
         return False
 
     con: Optional[sqlite3.Connection] = None
@@ -787,9 +776,9 @@ def _save_snapshot(
         _clear_snapshot_recovery(table, body, database_path)
         return True
     except Exception as e:
-        print(f"Notebook {table} Save Error: {e}")
+        log.error(f"Notebook {table} Save Error: {e}")
         if _write_snapshot_recovery(table, body, database_path):
-            print(f"Notebook {table}: latest snapshot stored in recovery file")
+            log.debug(f"Notebook {table}: latest snapshot stored in recovery file")
             return True
         return False
     finally:
@@ -860,7 +849,7 @@ def _pdf_deck_names() -> list[str]:
         # a narrow WebView. Any omitted deck can still be entered manually.
         return sorted(names, key=str.casefold)[:MAX_PDF_DECK_SUGGESTIONS]
     except Exception as exc:
-        print(f"Notebook could not load deck names for PDF Card Creator: {exc}")
+        log.debug(f"Notebook could not load deck names for PDF Card Creator: {exc}")
         return []
 
 
@@ -954,17 +943,17 @@ class _NotebookBackgroundWriter:
                 try:
                     callback(saved)
                 except Exception as exc:
-                    print(f"Notebook background save callback failed: {exc}")
+                    log.error(f"Notebook background save callback failed: {exc}")
 
         try:
             if mw and getattr(mw, "taskman", None):
                 mw.taskman.run_on_main(on_main)
             else:
-                print("Notebook background save completed without a main-thread dispatcher")
+                log.debug("Notebook background save completed without a main-thread dispatcher")
         except Exception as exc:
             # The durable write has already completed. During process shutdown Qt
             # may no longer accept callbacks, so logging is safer than touching UI.
-            print(f"Notebook could not dispatch save result: {exc}")
+            log.debug(f"Notebook could not dispatch save result: {exc}")
 
 
 _background_writer = _NotebookBackgroundWriter()
@@ -1106,7 +1095,7 @@ class NotebookPanel(QWidget):
             else:
                 # Keep the hidden page alive. When the user opens the dock again,
                 # load_content() returns to this exact unsaved in-memory state.
-                print("Notebook: WebView kept alive because its final save failed")
+                log.error("Notebook: WebView kept alive because its final save failed")
             self._finish_unload_callbacks(saved)
 
         self._flush_current_state(after_flush)
@@ -1118,7 +1107,7 @@ class NotebookPanel(QWidget):
             try:
                 callback(saved)
             except Exception as exc:
-                print(f"Notebook unload callback failed: {exc}")
+                log.error(f"Notebook unload callback failed: {exc}")
 
     def _on_load_finished(self, ok: bool) -> None:
         self._page_ready = bool(ok)
@@ -1135,7 +1124,7 @@ class NotebookPanel(QWidget):
         try:
             web_ref.cleanup()
         except Exception as exc:
-            print(f"Notebook: webview cleanup failed: {exc}")
+            log.error(f"Notebook: webview cleanup failed: {exc}")
         web_ref.deleteLater()
         self.web = None
         self.is_initialized = False
@@ -1167,7 +1156,7 @@ class NotebookPanel(QWidget):
             # therefore cannot accidentally follow mw.pm into another profile.
             database_path = db_path()
         except Exception as exc:
-            print(f"Notebook could not determine save path: {exc}")
+            log.debug(f"Notebook could not determine save path: {exc}")
             callback(False)
             return
         _background_writer.submit(table, body, database_path, callback)
@@ -1261,7 +1250,7 @@ class NotebookPanel(QWidget):
                         # Never spin indefinitely if a page keeps changing its
                         # serialized state while we are trying to leave it. The
                         # WebView stays open, so the user can retry without loss.
-                        print(
+                        log.debug(
                             "Notebook final save aborted after repeated live edits"
                         )
                         finish(False)
@@ -1273,7 +1262,7 @@ class NotebookPanel(QWidget):
                 try:
                     web_ref.evalWithCallback(verify_js, verify_snapshot)
                 except Exception as exc:
-                    print(f"Notebook final save verification failed: {exc}")
+                    log.error(f"Notebook final save verification failed: {exc}")
                     finish(False)
 
             self._queue_tool_snapshot(tool, snapshot, after_background_save)
@@ -1296,7 +1285,7 @@ class NotebookPanel(QWidget):
             # On timeout the WebView is retained, so no data is discarded.
             QTimer.singleShot(20000, lambda: finish(False))
         except Exception as exc:
-            print(f"Notebook final save request failed: {exc}")
+            log.error(f"Notebook final save request failed: {exc}")
             finish(False)
 
     def _apply_wide_mode(self, active: bool) -> None:
@@ -1765,7 +1754,7 @@ class NotebookPanel(QWidget):
                 return
             QApplication.clipboard().setText(text)
         except Exception as exc:
-            print(f"Notebook PDF copy failed: {exc}")
+            log.error(f"Notebook PDF copy failed: {exc}")
             self._notify_pdf_action(
                 "onPdfSelectionCopied",
                 False,
@@ -1882,7 +1871,7 @@ class NotebookPanel(QWidget):
             add_cards.raise_()
             add_cards.activateWindow()
         except Exception as exc:
-            print(f"Notebook PDF card draft failed: {exc}")
+            log.error(f"Notebook PDF card draft failed: {exc}")
             self._notify_pdf_action(
                 callback,
                 False,
@@ -1993,7 +1982,7 @@ class NotebookPanel(QWidget):
                 count=len(cards), deck=deck_name
             )
         except Exception as exc:
-            print(f"Notebook PDF card batch validation failed: {exc}")
+            log.error(f"Notebook PDF card batch validation failed: {exc}")
             self._notify_pdf_action(
                 callback, False, _("Could not create the PDF cards.")
             )
@@ -2053,7 +2042,7 @@ class NotebookPanel(QWidget):
                     col.merge_undo_entries(undo_entry)
                     col.undo()
                 except Exception as rollback_exc:
-                    print(f"Notebook PDF card batch rollback failed: {rollback_exc}")
+                    log.error(f"Notebook PDF card batch rollback failed: {rollback_exc}")
                 raise
 
             try:
@@ -2062,14 +2051,14 @@ class NotebookPanel(QWidget):
                 # The cards already exist at this point. Report success instead
                 # of encouraging a retry that would create duplicates; only the
                 # convenience of a single undo step is lost.
-                print(f"Notebook PDF card batch undo grouping failed: {merge_exc}")
+                log.error(f"Notebook PDF card batch undo grouping failed: {merge_exc}")
                 return changes
 
         def on_success(_changes) -> None:
             self._notify_pdf_action(callback, True, success_message)
 
         def on_failure(exc: Exception) -> None:
-            print(f"Notebook PDF card batch failed: {exc}")
+            log.error(f"Notebook PDF card batch failed: {exc}")
             self._notify_pdf_action(
                 callback, False, _("Could not create the PDF cards.")
             )

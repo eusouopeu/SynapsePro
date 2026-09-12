@@ -27,6 +27,11 @@ except ImportError:
     from logging_util import get_logger  # type: ignore
 log = get_logger(__name__)
 
+try:
+    from .json_state import atomic_write_json, read_json_file
+except ImportError:
+    from json_state import atomic_write_json, read_json_file  # type: ignore
+
 # ── Local imports ─────────────────────────────────────────────────────────────
 try:
     from . import constants
@@ -224,39 +229,16 @@ def _secret_path() -> Optional[str]:
 
 
 def _load_secret_map() -> Dict[str, str]:
-    path = _secret_path()
-    if not path or not os.path.isfile(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            value = json.load(handle)
-        if isinstance(value, dict):
-            return {str(k): str(v) for k, v in value.items() if isinstance(v, str)}
-    except Exception as exc:
-        log.error(f"AI Assistant: secret file read error: {exc}")
+    value = read_json_file(_secret_path())
+    if isinstance(value, dict):
+        return {str(k): str(v) for k, v in value.items() if isinstance(v, str)}
     return {}
 
 
 def _save_secret_map(values: Dict[str, str]) -> None:
     path = _secret_path()
-    if not path:
-        return
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(values, handle, indent=2)
-        try:
-            os.chmod(tmp, 0o600)
-        except OSError:
-            pass
-        os.replace(tmp, path)
-    except Exception as exc:
-        log.error(f"AI Assistant: secret file write error: {exc}")
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except OSError:
-            pass
+    if not atomic_write_json(path, values, indent=2, chmod=0o600):
+        log.error("AI Assistant: secret file write error")
 
 
 def _secret_get(key: str, default: Any = "") -> Any:

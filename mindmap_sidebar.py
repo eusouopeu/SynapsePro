@@ -6,6 +6,12 @@ import time
 import traceback
 from typing import Callable, Optional
 
+try:
+    from .logging_util import get_logger
+except ImportError:
+    from logging_util import get_logger  # type: ignore
+log = get_logger(__name__)
+
 # --- Local Imports ---
 from . import constants
 
@@ -36,6 +42,10 @@ except ImportError:
     def _(text): return text  # type: ignore
 
 from . import embedded_window
+try:
+    from .json_state import atomic_write_json, read_json_file
+except ImportError:
+    from json_state import atomic_write_json, read_json_file  # type: ignore
 
 # --- Globale Referenz ---
 mindmap_dock: Optional[QDockWidget] = None
@@ -51,47 +61,28 @@ def _mindmap_recovery_path() -> str:
 def _write_mindmap_recovery(snapshot: str, saved_at: int) -> bool:
     """Atomically mirror the latest map collection outside QtWebEngine storage."""
     path = _mindmap_recovery_path()
-    tmp_path = f"{path}.tmp"
     try:
         mindmaps = json.loads(snapshot)
         if not isinstance(mindmaps, dict):
             raise ValueError("mind map recovery snapshot is not an object")
-        payload = {
-            "version": 1,
-            "saved_at": int(saved_at),
-            "mindmaps": mindmaps,
-        }
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
-        return True
     except Exception as exc:
-        print(f"Mindmap recovery save failed: {exc}")
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except OSError:
-            pass
+        log.error(f"Mindmap recovery save failed: {exc}")
         return False
+    payload = {"version": 1, "saved_at": int(saved_at), "mindmaps": mindmaps}
+    ok = atomic_write_json(path, payload, ensure_ascii=False, separators=(",", ":"), fsync=True)
+    if not ok:
+        log.error("Mindmap recovery save failed: could not write recovery file")
+    return ok
 
 
 def _load_mindmap_recovery() -> Optional[dict]:
-    try:
-        with open(_mindmap_recovery_path(), "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        if (
-            isinstance(payload, dict)
-            and isinstance(payload.get("saved_at"), int)
-            and isinstance(payload.get("mindmaps"), dict)
-        ):
-            return payload
-    except FileNotFoundError:
-        pass
-    except Exception as exc:
-        print(f"Mindmap recovery load failed: {exc}")
+    payload = read_json_file(_mindmap_recovery_path())
+    if (
+        isinstance(payload, dict)
+        and isinstance(payload.get("saved_at"), int)
+        and isinstance(payload.get("mindmaps"), dict)
+    ):
+        return payload
     return None
 
 # --- Vollbildfenster ---
@@ -328,8 +319,8 @@ class MindmapPanel(QWidget):
             if new_storage != old_storage and os.path.exists(old_storage) and not os.path.exists(new_storage):
                 try:
                     shutil.copytree(old_storage, new_storage)
-                    print("Mindmap: Data migrated to profile folder.")
-                except Exception as e: print(f"Mindmap Migration Warning: {e}")
+                    log.debug("Mindmap: Data migrated to profile folder.")
+                except Exception as e: log.error(f"Mindmap Migration Warning: {e}")
 
             os.makedirs(new_storage, exist_ok=True)
             
@@ -373,7 +364,7 @@ class MindmapPanel(QWidget):
                 )
                 self.page.scripts().insert(script)
             except Exception as exc:
-                print(f"Mindmap: early translation injection failed: {exc}")
+                log.error(f"Mindmap: early translation injection failed: {exc}")
 
         if QWebEngineSettings is not object:
             try:
@@ -430,7 +421,7 @@ class MindmapPanel(QWidget):
         try:
             self.web_view.page().runJavaScript(js)
         except Exception as exc:
-            print(f"Mindmap recovery injection failed: {exc}")
+            log.error(f"Mindmap recovery injection failed: {exc}")
 
     def _destroy_web_view(self, web_ref) -> None:
         if self.web_view is not web_ref:
@@ -476,7 +467,7 @@ class MindmapPanel(QWidget):
             else:
                 # Keep the hidden WebView alive so reopening the dock returns to
                 # the unsaved in-memory state instead of loading older data.
-                print("Mindmap: WebView kept alive because final persistence failed")
+                log.debug("Mindmap: WebView kept alive because final persistence failed")
             self._finish_unload_callbacks(durable)
 
         def receive_snapshot(result) -> None:
@@ -512,7 +503,7 @@ class MindmapPanel(QWidget):
             # unlocks the panel and deliberately keeps the WebView in memory.
             QTimer.singleShot(5000, lambda: finish(False))
         except Exception as exc:
-            print(f"Mindmap final save request failed: {exc}")
+            log.error(f"Mindmap final save request failed: {exc}")
             finish(False)
 
     def _finish_unload_callbacks(self, saved: bool) -> None:
@@ -522,7 +513,7 @@ class MindmapPanel(QWidget):
             try:
                 callback(saved)
             except Exception as exc:
-                print(f"Mindmap unload callback failed: {exc}")
+                log.error(f"Mindmap unload callback failed: {exc}")
 
     def _inject_i18n(self):
         """Inject the translation dict and call applyMindmapI18n() in the page."""
@@ -687,7 +678,7 @@ def setup_mindmap_dock():
         mindmap_dock.setVisible(False)
 
     except Exception as e:
-        print(f"MindmapSidebar Setup Error: {e}")
+        log.error(f"MindmapSidebar Setup Error: {e}")
         traceback.print_exc()
 
 def toggle_mindmap_dock():
