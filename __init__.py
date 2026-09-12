@@ -1030,7 +1030,7 @@ def on_profile_open():
     _dashboard_rendered_with_models = False
     _daily_maintenance_done = False
     try:
-        statistics_widget.invalidate_statistics_cache()
+        statistics_widget.invalidate_statistics_cache(hard=True)
     except Exception:
         pass
     if mw:
@@ -1142,7 +1142,7 @@ def on_profile_close():
     _daily_maintenance_done = False
     _top_toolbar_redraw_generation += 1
     try:
-        statistics_widget.invalidate_statistics_cache()
+        statistics_widget.invalidate_statistics_cache(hard=True)
     except Exception:
         pass
     if _synapse_tools_menu is not None:
@@ -1255,6 +1255,56 @@ def _render_unified_widgets_panel(gm, lpm) -> str:
     return fragments["css"] + plan_css + html
 
 
+# Bumped every time a background stats refresh is scheduled so a slow,
+# superseded task (e.g. the user flipped the deck filter twice quickly)
+# never overwrites the DOM with an answer nobody asked for anymore.
+_stats_refresh_generation = 0
+
+
+def _schedule_stats_refresh(stats_days: int, deck_id, deck_goal_target) -> None:
+    """Recompute the statistics widget's SQL snapshot off the UI thread,
+    then patch the already-painted widget in place via mw.web.eval(...).
+
+    Keeps the deck browser responsive on large collections: the widget
+    paints instantly with the last known-good numbers (see
+    statistics_widget._stale_cache) instead of blocking on 6+ queries over
+    `revlog`/`cards` every time the dashboard re-renders after a review or
+    a sync.
+    """
+    global _stats_refresh_generation
+    if not mw or not getattr(mw, "taskman", None):
+        return
+    _stats_refresh_generation += 1
+    my_generation = _stats_refresh_generation
+
+    def _compute():
+        return statistics_widget.render_statistics_widget_html_fresh(
+            stats_days=stats_days, deck_id=deck_id, deck_goal_target=deck_goal_target,
+        )
+
+    def _on_done(fut) -> None:
+        if my_generation != _stats_refresh_generation:
+            return  # a newer refresh (or render) has since superseded this one
+        if not mw or mw.state != "deckBrowser":
+            return
+        try:
+            new_html = fut.result()
+        except Exception as e:
+            log.error(f"SynapsePro: background stats refresh failed: {e}")
+            return
+        try:
+            dom_id = statistics_widget.STATS_WIDGET_DOM_ID
+            mw.web.eval(
+                "(function(){var el=document.getElementById(%s); "
+                "if(el){el.outerHTML=%s;}})();"
+                % (json.dumps(dom_id), json.dumps(new_html))
+            )
+        except Exception as e:
+            log.error(f"SynapsePro: background stats DOM patch failed: {e}")
+
+    mw.taskman.run_in_background(_compute, _on_done)
+
+
 def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrowserContent):
     global _dashboard_rendered_with_models
     minimal_enabled = bool(addon_settings.get("minimal_dashboard_enabled", False))
@@ -1294,11 +1344,18 @@ def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrow
                 _deck_goal_target = None
                 if _stats_deck_id:
                     _deck_goal_target = int((addon_settings.get("deck_goals") or {}).get(str(_stats_deck_id), 0) or 0)
-                stats_html = statistics_widget.render_statistics_widget_html(
-                    stats_days=int(addon_settings.get("stats_time_range", 7)),
+                _stats_days = int(addon_settings.get("stats_time_range", 7))
+                stats_html, _stats_fresh = statistics_widget.render_statistics_widget_html_with_freshness(
+                    stats_days=_stats_days,
                     deck_id=_stats_deck_id,
                     deck_goal_target=_deck_goal_target,
                 )
+                if not _stats_fresh:
+                    # Paint now with the last known-good numbers; the real
+                    # SQL recompute (year heatmap, due forecast, best hour,
+                    # two revlog scans) runs off the UI thread and patches
+                    # the widget in place once it's done.
+                    _schedule_stats_refresh(_stats_days, _stats_deck_id, _deck_goal_target)
             except Exception as e: log.error(f"SynapsePro: stats widget render error: {e}")
 
         gam_enabled = bool(addon_settings.get("gamification_widgets_enabled", True) and gm)

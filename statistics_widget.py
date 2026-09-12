@@ -43,10 +43,64 @@ WIDGET_MAX_WIDTH = "860px"
 _STATISTICS_CACHE_TTL_SECONDS = 1.0
 _statistics_cache = {}
 
+# Unlike _statistics_cache (which expires after _STATISTICS_CACHE_TTL_SECONDS
+# and forces a synchronous SQL recompute on the render thread once it does),
+# _stale_cache never expires on its own. It holds the last successfully
+# computed snapshot per cache key so a deck-browser render can paint
+# *instantly* with slightly-stale numbers while __init__.py recomputes the
+# real thing on a background thread (see recompute_statistics_data /
+# recompute_minimal_statistics_data) and patches the DOM once it's ready.
+# invalidate_statistics_cache() deliberately does NOT clear this dict: that
+# would defeat its purpose, since it's called right at the moments (leaving
+# review, sync finishing) a fresh render is about to be requested.
+_stale_cache = {}
 
-def invalidate_statistics_cache() -> None:
-    """Drop all cached dashboard snapshots (profile/review boundary)."""
+
+def invalidate_statistics_cache(hard: bool = False) -> None:
+    """Force the next render to treat cached snapshots as stale.
+
+    By default this keeps the last known-good values (see _stale_cache
+    above), so a deck-browser render can still paint instantly while a
+    background task recomputes fresh numbers — used at ordinary
+    review/sync boundaries. Pass ``hard=True`` at a profile switch: the
+    previous profile's numbers belong to a different collection and must
+    not flash on screen even for one frame while the real snapshot loads.
+    """
     _statistics_cache.clear()
+    if hard:
+        _stale_cache.clear()
+
+
+def _get_cached_or_stale(cache_key, compute_fn):
+    """Return ``(value, is_fresh)`` for `cache_key`, computing at most once.
+
+    - Fresh TTL hit: returns the cached value, ``is_fresh=True``.
+    - Stale/missing but a previous snapshot exists: returns that previous
+      snapshot immediately, ``is_fresh=False`` — the caller is expected to
+      schedule a background recompute (see the ``recompute_*`` functions
+      below) and patch the UI when it completes.
+    - Nothing cached yet at all (e.g. the very first deck-browser paint this
+      session): computes synchronously as a last resort, since there is no
+      older value to show meanwhile.
+    """
+    now = time.monotonic()
+    cached = _statistics_cache.get(cache_key)
+    if cached and now - cached[0] <= _STATISTICS_CACHE_TTL_SECONDS:
+        return cached[1], True
+    stale = _stale_cache.get(cache_key)
+    if stale is not None:
+        return stale, False
+    value = compute_fn()
+    _statistics_cache[cache_key] = (now, value)
+    _stale_cache[cache_key] = value
+    return value, True
+
+
+def _store_fresh(cache_key, value) -> None:
+    """Record a freshly (re)computed snapshot so later calls serve it
+    instantly, whether they came from the TTL cache or the stale fallback."""
+    _statistics_cache[cache_key] = (time.monotonic(), value)
+    _stale_cache[cache_key] = value
 
 # ── Review activity helpers ───────────────────────────────────────────────────
 def _get_rollover_hour() -> int:
@@ -507,22 +561,13 @@ def _delta_percent(current, previous):
     return ((current - previous) / previous) * 100.0
 
 
-def get_statistics_data(stats_days=7, deck_id=None):
-    """
-    Sammelt und berechnet alle Statistiken.
-    Erhält den Zeitraum (stats_days) als Argument von __init__.py.
-    deck_id, if given, restricts every metric to that deck's subtree.
-    """
-
-    if not isinstance(stats_days, int) or stats_days < 1:
-        stats_days = 7
-
-    cache_key = (stats_days, deck_id)
-    now = time.monotonic()
-    cached = _statistics_cache.get(cache_key)
-    if cached and now - cached[0] <= _STATISTICS_CACHE_TTL_SECONDS:
-        return cached[1]
-
+def _compute_statistics_data(stats_days, deck_id):
+    """The actual SQL work behind get_statistics_data() — no caching here.
+    Runs 6+ queries over `revlog`/`cards` (review totals for two periods,
+    best study hour, the year heatmap, the due forecast); on large
+    collections this can take long enough to be felt as a stutter, which is
+    exactly why callers go through the cache/stale-serve wrapper below
+    instead of calling this directly on the render thread."""
     deck_ids = get_deck_and_children_ids(deck_id) if deck_id else None
 
     chart_html, avg_daily_reviews = _build_mini_chart(deck_ids=deck_ids)
@@ -609,8 +654,42 @@ def get_statistics_data(stats_days=7, deck_id=None):
         "days_scope": stats_days,
         "deck_id": deck_id,
     }
-    _statistics_cache[cache_key] = (time.monotonic(), result)
     return result
+
+
+def get_statistics_data(stats_days=7, deck_id=None):
+    """Sammelt und berechnet alle Statistiken (cached).
+
+    Erhält den Zeitraum (stats_days) als Argument von __init__.py.
+    deck_id, if given, restricts every metric to that deck's subtree.
+    Serves a fresh or last-known-good snapshot instantly; see
+    get_statistics_data_with_freshness() if the caller needs to know
+    whether a background refresh should be scheduled.
+    """
+    return get_statistics_data_with_freshness(stats_days, deck_id)[0]
+
+
+def get_statistics_data_with_freshness(stats_days=7, deck_id=None):
+    """Like get_statistics_data(), but also reports whether the snapshot is
+    within the fast TTL window (``True``) or a stale fallback the caller
+    should schedule a background recompute for (``False``)."""
+    if not isinstance(stats_days, int) or stats_days < 1:
+        stats_days = 7
+    cache_key = (stats_days, deck_id)
+    return _get_cached_or_stale(cache_key, lambda: _compute_statistics_data(stats_days, deck_id))
+
+
+def recompute_statistics_data(stats_days=7, deck_id=None):
+    """Force a fresh computation, bypassing every cache, and record the
+    result so subsequent renders see it immediately. Intended to run on a
+    background thread via mw.taskman.run_in_background — see
+    _schedule_stats_refresh() in __init__.py."""
+    if not isinstance(stats_days, int) or stats_days < 1:
+        stats_days = 7
+    cache_key = (stats_days, deck_id)
+    value = _compute_statistics_data(stats_days, deck_id)
+    _store_fresh(cache_key, value)
+    return value
 
 
 def get_minimal_statistics_data(stats_days=7):
@@ -621,13 +700,31 @@ def get_minimal_statistics_data(stats_days=7):
     """
     if not isinstance(stats_days, int) or stats_days < 1:
         stats_days = 7
-
     cache_key = ("minimal", stats_days)
-    now = time.monotonic()
-    cached = _statistics_cache.get(cache_key)
-    if cached and now - cached[0] <= _STATISTICS_CACHE_TTL_SECONDS:
-        return cached[1]
+    return _get_cached_or_stale(cache_key, lambda: _compute_minimal_statistics_data(stats_days))[0]
 
+
+def get_minimal_statistics_data_with_freshness(stats_days=7):
+    """Like get_minimal_statistics_data(), but also reports freshness — see
+    get_statistics_data_with_freshness() for the same contract."""
+    if not isinstance(stats_days, int) or stats_days < 1:
+        stats_days = 7
+    cache_key = ("minimal", stats_days)
+    return _get_cached_or_stale(cache_key, lambda: _compute_minimal_statistics_data(stats_days))
+
+
+def recompute_minimal_statistics_data(stats_days=7):
+    """Force a fresh computation for the minimal dashboard, bypassing every
+    cache — the minimal-dashboard counterpart to recompute_statistics_data()."""
+    if not isinstance(stats_days, int) or stats_days < 1:
+        stats_days = 7
+    cache_key = ("minimal", stats_days)
+    value = _compute_minimal_statistics_data(stats_days)
+    _store_fresh(cache_key, value)
+    return value
+
+
+def _compute_minimal_statistics_data(stats_days):
     chart_html, _avg_daily_reviews = _build_mini_chart()
     stats_start_ts = int(
         (datetime.now() - timedelta(days=stats_days)).timestamp()
@@ -663,7 +760,6 @@ def get_minimal_statistics_data(stats_days=7):
         "new_cards_percent": new_cards_percent,
         "days_scope": stats_days,
     }
-    _statistics_cache[cache_key] = (time.monotonic(), result)
     return result
 
 def _format_delta_badge(value, suffix, tooltip=""):
@@ -1304,13 +1400,36 @@ def render_widget_html_internal(stats, deck_goal_target=None):
 
     return css + html
 
+# Stable id on the widget's root element so a background refresh (see
+# _schedule_stats_refresh() in __init__.py) can patch it in place via
+# mw.web.eval(...) instead of forcing a full deck-browser re-render.
+STATS_WIDGET_DOM_ID = "synapsepro-stats-widget"
+
+
 def render_statistics_widget_html(stats_days=7, deck_id=None, deck_goal_target=None):
     """
     Hauptfunktion, die von __init__.py aufgerufen wird.
     Akzeptiert den Zeitraum und gibt das HTML zurück.
     """
-    data = get_statistics_data(stats_days, deck_id=deck_id)
-    return render_widget_html_internal(data, deck_goal_target=deck_goal_target)
+    return render_statistics_widget_html_with_freshness(
+        stats_days, deck_id=deck_id, deck_goal_target=deck_goal_target)[0]
+
+
+def render_statistics_widget_html_with_freshness(stats_days=7, deck_id=None, deck_goal_target=None):
+    """Same HTML as render_statistics_widget_html(), plus whether it reflects
+    a fresh snapshot or a stale one __init__.py should schedule a background
+    refresh for."""
+    data, is_fresh = get_statistics_data_with_freshness(stats_days, deck_id=deck_id)
+    inner = render_widget_html_internal(data, deck_goal_target=deck_goal_target)
+    return f'<div id="{STATS_WIDGET_DOM_ID}">{inner}</div>', is_fresh
+
+
+def render_statistics_widget_html_fresh(stats_days=7, deck_id=None, deck_goal_target=None):
+    """Force a fresh computation and render it — the piece that actually
+    runs on the background thread scheduled by _schedule_stats_refresh()."""
+    data = recompute_statistics_data(stats_days, deck_id=deck_id)
+    inner = render_widget_html_internal(data, deck_goal_target=deck_goal_target)
+    return f'<div id="{STATS_WIDGET_DOM_ID}">{inner}</div>'
 
 
 def show_statistics_info_dialog(parent=None, stats_days=7):
