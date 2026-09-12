@@ -32,17 +32,16 @@ log = get_logger(__name__)
 
 # --- Translation ---
 try:
-    from .locales import _, TRANSLATIONS
+    from .locales import _, translate_native_for, translate_web_for
 except ImportError:
     def _(text): return text  # type: ignore
-    TRANSLATIONS = {}  # type: ignore
+    def translate_native_for(text, lang): return text  # type: ignore
+    def translate_web_for(text, lang): return text  # type: ignore
 
 try:
     from .onboarding_terms import TERMS_TRANSLATIONS
-    from .web_translations import WEB_TRANSLATIONS
 except ImportError:
     from onboarding_terms import TERMS_TRANSLATIONS  # type: ignore
-    from web_translations import WEB_TRANSLATIONS  # type: ignore
 
 # ── Theme mapping ──────────────────────────────────────────────────────────────
 # Maps the 1-based index of the theme card (img_theme_N.png) to the
@@ -164,7 +163,7 @@ if _QT_AVAILABLE:
             )
             errors = {
                 lang: {
-                    source: source if lang == "en" else WEB_TRANSLATIONS[source][lang]
+                    source: translate_web_for(source, lang)
                     for source in error_sources
                 }
                 for lang in ("en", "de", "es", "ko", "pt", "fr", "vi", "zh", "hi")
@@ -172,7 +171,7 @@ if _QT_AVAILABLE:
             theme_sources = ("Ocean", "Horizon", "Forest", "Dusty", "Deluge", "Orchid")
             themes = {
                 lang: [
-                    source if lang == "en" else TRANSLATIONS.get(source, {}).get(lang, source)
+                    translate_native_for(source, lang)
                     for source in theme_sources
                 ]
                 for lang in ("en", "de", "es", "ko", "pt", "fr", "vi", "zh", "hi")
