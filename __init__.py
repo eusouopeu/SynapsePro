@@ -5,12 +5,18 @@ from __future__ import annotations
 import os, sys, json, re, traceback, shutil
 from typing import Optional, Union, Any, Dict
 
+try:
+    from .logging_util import get_logger
+except ImportError:
+    from logging_util import get_logger  # type: ignore
+log = get_logger(__name__)
+
 # --- Import Sub-Modules ---
 try:
     from . import constants, study_plan_trigger, locales
     from .locales import _
 except ImportError as e:
-    print(f"SynapsePro1 CRITICAL ERROR: {e}")
+    log.error(f"SynapsePro1 CRITICAL ERROR: {e}")
     constants=object(); study_plan_trigger=object()
     # Safety fallbacks so UI strings and language handling don't NameError
     # if the locales module fails to import.
@@ -32,7 +38,7 @@ try:
     from aqt.reviewer import ReviewerBottomBar
     from aqt.toolbar import TopToolbar
 except ImportError:
-    print(f"SynapsePro1: ERROR - Failed to import Anki modules.")
+    log.error(f"SynapsePro1: ERROR - Failed to import Anki modules.")
     QDockWidget, QWidget, Qt, QTimer = object, object, None, None
 
 
@@ -81,7 +87,7 @@ try:
                                  DeckGoalConfigDialog)
     modules_loaded = True
 except Exception as e:
-    print(f"SynapsePro1: ERROR - Failed to import sub-modules: {e}")
+    log.error(f"SynapsePro1: ERROR - Failed to import sub-modules: {e}")
     traceback.print_exc()
 
 # --- Config Paths ---
@@ -176,7 +182,7 @@ def write_custom_solid_css() -> None:
         base_dir = os.path.join(addon_path, "theme", "user_files")
         template_path = os.path.join(base_dir, "solid_light.css")
         if not os.path.exists(template_path):
-            print("SynapsePro: custom solid template missing, skipping generation.")
+            log.debug("SynapsePro: custom solid template missing, skipping generation.")
             return
         with open(template_path, "r", encoding="utf-8") as f:
             css = f.read()
@@ -184,9 +190,9 @@ def write_custom_solid_css() -> None:
         css = "/* custom_solid.css — auto-generated, edits will be overwritten */\n" + css
         with open(os.path.join(base_dir, "custom_solid.css"), "w", encoding="utf-8") as f:
             f.write(css)
-        print(f"SynapsePro: custom solid background written ({light}/{dark}).")
+        log.debug(f"SynapsePro: custom solid background written ({light}/{dark}).")
     except Exception as e:
-        print(f"SynapsePro: could not write custom solid css: {e}")
+        log.debug(f"SynapsePro: could not write custom solid css: {e}")
 
 def load_addon_settings():
     global addon_settings
@@ -197,7 +203,7 @@ def load_addon_settings():
     except FileNotFoundError:
         pass  # First run / no settings yet — defaults are correct.
     except json.JSONDecodeError as e:
-        print(f"SynapsePro1: settings file corrupt, falling back to defaults: {e}")
+        log.debug(f"SynapsePro1: settings file corrupt, falling back to defaults: {e}")
     addon_settings = defaults
 
 def save_addon_settings():
@@ -210,7 +216,7 @@ def save_addon_settings():
         try:
             if os.path.exists(tmp_path): os.remove(tmp_path)
         except OSError: pass
-        print(f"SynapsePro1 ERROR: Save settings: {e}")
+        log.error(f"SynapsePro1 ERROR: Save settings: {e}")
 
 def _sync_toolbar_review_class(new_state: str):
     """Toggle the 'reviewing' class on the persistent toolbar webviews.
@@ -227,7 +233,7 @@ def _sync_toolbar_review_class(new_state: str):
         if mw and getattr(mw, "bottomWeb", None):
             mw.bottomWeb.eval(js)
     except Exception as e:
-        print(f"SynapsePro: toolbar review sync failed: {e}")
+        log.error(f"SynapsePro: toolbar review sync failed: {e}")
 
 
 def _launcher_sidebar_is_visible() -> bool:
@@ -276,7 +282,7 @@ def _sync_launcher_toolbar_button(*_args) -> None:
     except (RuntimeError, AttributeError):
         pass
     except Exception as e:
-        print(f"SynapsePro: sidebar toolbar state sync failed: {e}")
+        log.error(f"SynapsePro: sidebar toolbar state sync failed: {e}")
 
 
 def toggle_launcher_sidebar() -> None:
@@ -361,7 +367,7 @@ def _add_launcher_toggle_to_top_toolbar(links, toolbar) -> None:
         """
         links.insert(0, style + link)
     except Exception as e:
-        print(f"SynapsePro: could not add sidebar toolbar button: {e}")
+        log.debug(f"SynapsePro: could not add sidebar toolbar button: {e}")
 
 # --- State Change Notification (Show/Hide Sidebar) ---
 def on_state_change(new_state: str, old_state: str):
@@ -394,7 +400,7 @@ def on_state_change(new_state: str, old_state: str):
                 gamification_manager.invalidate_dashboard_cache()
                 gamification_manager.refresh_streak_cache(persist=True)
         except Exception as e:
-            print(f"SynapsePro: dashboard cache refresh failed: {e}")
+            log.error(f"SynapsePro: dashboard cache refresh failed: {e}")
         try:
             mw.progress.single_shot(450, deck_overview.inject_session_summary_into_congrats)
             mw.progress.single_shot(1400, deck_overview.inject_session_summary_into_congrats)
@@ -451,7 +457,7 @@ def _apply_onboarding_result(result: dict):
         from .theme import set_active_theme
         set_active_theme(theme_name)
     except Exception as e:
-        print(f"SynapsePro Onboarding: could not apply theme '{theme_name}': {e}")
+        log.debug(f"SynapsePro Onboarding: could not apply theme '{theme_name}': {e}")
 
     # ── Fact category (driven by user role) ───────────────────────────────────
     role_key = result.get("roleKey", "other")
@@ -466,7 +472,7 @@ def _apply_onboarding_result(result: dict):
     addon_settings["onboarding_source"] = source_key
 
     save_addon_settings()
-    print(f"SynapsePro Onboarding: applied — lang={lang}, theme={theme_name}, "
+    log.debug(f"SynapsePro Onboarding: applied — lang={lang}, theme={theme_name}, "
           f"fact_theme={fact_theme}, role={role_key}")
 
     # Consented onboarding analytics → Supabase. This is fire-and-forget and
@@ -503,9 +509,9 @@ def _apply_onboarding_result(result: dict):
             with urllib.request.urlopen(
                 request, context=ssl.create_default_context(), timeout=8
             ) as response:
-                print(f"SynapsePro Onboarding analytics: sent (HTTP {response.status})")
+                log.debug(f"SynapsePro Onboarding analytics: sent (HTTP {response.status})")
         except Exception as exc:
-            print(f"SynapsePro Onboarding analytics: unavailable — {exc}")
+            log.debug(f"SynapsePro Onboarding analytics: unavailable — {exc}")
 
     import threading
     threading.Thread(target=_send_onboarding_analytics, daemon=True).start()
@@ -588,7 +594,7 @@ def _apply_saved_settings(new_settings):
     try:
         sidebar_shortcuts.refresh(addon_settings)
     except Exception as e:
-        print(f"SynapsePro: shortcut refresh failed: {e}")
+        log.error(f"SynapsePro: shortcut refresh failed: {e}")
 
     # Regenerate the custom solid background CSS if it is (still) selected,
     # so colour changes take effect on the next webview render.
@@ -681,7 +687,7 @@ def _redraw_top_toolbar():
             # path; a regular toolbar draw lets Anki keep its native sizing.
             toolbar.draw()
     except Exception as e:
-        print(f"SynapsePro: top toolbar redraw failed: {e}")
+        log.error(f"SynapsePro: top toolbar redraw failed: {e}")
 
 
 def _schedule_top_toolbar_redraw(delay_ms: int = 0) -> None:
@@ -763,7 +769,7 @@ def _sync_webview_bg_colors():
         except Exception:
             pass
     except Exception as e:
-        print(f"SynapsePro: webview bg sync failed: {e}")
+        log.error(f"SynapsePro: webview bg sync failed: {e}")
 
 
 def show_settings_dialog():
@@ -777,7 +783,7 @@ def show_settings_dialog():
             if cand.is_available():
                 dlg = cand
         except Exception as e:
-            print(f"SynapsePro: HTML settings unavailable ({e}); using native dialog.")
+            log.debug(f"SynapsePro: HTML settings unavailable ({e}); using native dialog.")
 
         if dlg is None:
             from . import settings_dialog
@@ -807,7 +813,7 @@ def _ensure_gamification_sidebar():
         mw.gamification_sidebar = sidebar
         return sidebar
     except Exception as e:
-        print(f"SynapsePro: could not create gamification sidebar: {e}")
+        log.debug(f"SynapsePro: could not create gamification sidebar: {e}")
         traceback.print_exc()
         return None
 
@@ -827,7 +833,7 @@ def show_configuration_dialog():
         if LearningPlanConfigDialog(study_plan_config_json_path, mw).exec():
             if learning_plan_manager: learning_plan_manager._initialize_status_for_today()
             if mw.state == "deckBrowser": mw.deckBrowser.refresh()
-    except Exception as e: print(f"SynapsePro: configuration dialog error: {e}")
+    except Exception as e: log.error(f"SynapsePro: configuration dialog error: {e}")
 
 # --- Theme Change Notification ---
 def on_theme_changed():
@@ -851,7 +857,7 @@ def on_sync_finished(*_args) -> None:
             gamification_manager.invalidate_dashboard_cache()
             gamification_manager.refresh_streak_cache(persist=True)
     except Exception as e:
-        print(f"SynapsePro: post-sync dashboard refresh failed: {e}")
+        log.error(f"SynapsePro: post-sync dashboard refresh failed: {e}")
 
 
 def _init_data_managers() -> None:
@@ -870,7 +876,7 @@ def _init_data_managers() -> None:
         deck_overview.init_deck_overview()
         deck_overview.update_settings(addon_settings)
     except Exception as e:
-        print(f"SynapsePro: deck overview initialization failed: {e}")
+        log.error(f"SynapsePro: deck overview initialization failed: {e}")
 
     if not gamification_manager:
         try:
@@ -878,7 +884,7 @@ def _init_data_managers() -> None:
                 addon_path=constants.addon_path)
             mw.gamification_manager = gamification_manager
         except Exception as e:
-            print(f"SynapsePro: gamification manager initialization failed: {e}")
+            log.error(f"SynapsePro: gamification manager initialization failed: {e}")
             traceback.print_exc()
 
     minimal_dashboard_enabled = addon_settings.get("minimal_dashboard_enabled", False)
@@ -888,7 +894,7 @@ def _init_data_managers() -> None:
             deadline_manager = DeadlineManager()
             mw.deadline_manager = deadline_manager
         except Exception as e:
-            print(f"SynapsePro: deadline manager initialization failed: {e}")
+            log.error(f"SynapsePro: deadline manager initialization failed: {e}")
 
     if (minimal_dashboard_enabled or addon_settings.get("daily_widgets_enabled", True)) and not learning_plan_manager:
         try:
@@ -896,7 +902,7 @@ def _init_data_managers() -> None:
                 study_plan_config_json_path)
             mw.learning_plan_manager = learning_plan_manager
         except Exception as e:
-            print(f"SynapsePro: learning-plan initialization failed: {e}")
+            log.error(f"SynapsePro: learning-plan initialization failed: {e}")
 
     if gamification_manager and not _daily_maintenance_done:
         try:
@@ -906,7 +912,7 @@ def _init_data_managers() -> None:
             gamification_manager.check_and_update_streak_and_time_xp()
             _daily_maintenance_done = True
         except Exception as e:
-            print(f"SynapsePro: daily gamification maintenance failed: {e}")
+            log.error(f"SynapsePro: daily gamification maintenance failed: {e}")
 
 
 def _init_launcher_dock() -> None:
@@ -959,9 +965,9 @@ def _init_launcher_dock() -> None:
         try:
             sidebar_shortcuts.refresh(addon_settings)
         except Exception as e:
-            print(f"SynapsePro: shortcut setup failed: {e}")
+            log.error(f"SynapsePro: shortcut setup failed: {e}")
     except Exception as e:
-        print(f"SynapsePro: launcher initialization failed: {e}")
+        log.error(f"SynapsePro: launcher initialization failed: {e}")
         traceback.print_exc()
 
 
@@ -978,6 +984,9 @@ def on_profile_open():
         if not os.path.exists(data_folder):
             os.makedirs(data_folder)
 
+        from .logging_util import init_logging
+        init_logging(profile_folder)
+
         new_settings_path = os.path.join(data_folder, "addon_settings.json")
         new_plan_path = os.path.join(data_folder, "study_plan_config.json")
 
@@ -985,21 +994,21 @@ def on_profile_open():
         if os.path.exists(old_settings) and not os.path.exists(new_settings_path):
             try:
                 shutil.move(old_settings, new_settings_path)
-                print("SynapsePro: Migrated settings to profile folder.")
-            except Exception as e: print(f"SynapsePro Migration Error (Settings): {e}")
+                log.debug("SynapsePro: Migrated settings to profile folder.")
+            except Exception as e: log.error(f"SynapsePro Migration Error (Settings): {e}")
 
         old_plan = os.path.join(addon_path, "study_plan_config.json")
         if os.path.exists(old_plan) and not os.path.exists(new_plan_path):
             try:
                 shutil.move(old_plan, new_plan_path)
-                print("SynapsePro: Migrated study plan to profile folder.")
-            except Exception as e: print(f"SynapsePro Migration Error (Plan): {e}")
+                log.debug("SynapsePro: Migrated study plan to profile folder.")
+            except Exception as e: log.error(f"SynapsePro Migration Error (Plan): {e}")
 
         addon_settings_path = new_settings_path
         study_plan_config_json_path = new_plan_path
 
     except Exception as e:
-        print(f"SynapsePro: Error determining profile path: {e}")
+        log.error(f"SynapsePro: Error determining profile path: {e}")
 
     load_addon_settings()
     # Make sure the custom solid background file exists if it is selected
@@ -1066,7 +1075,7 @@ def _init_ui_delayed(expected_profile_generation=None):
                 gamification_manager.check_and_update_streak_and_time_xp())
             _daily_maintenance_done = True
         except Exception as e:
-            print(f"SynapsePro: daily gamification maintenance failed: {e}")
+            log.error(f"SynapsePro: daily gamification maintenance failed: {e}")
 
     if addon_settings.get("notebook_enabled", True):
         setup_notebook_sidebar()
@@ -1090,7 +1099,7 @@ def _init_ui_delayed(expected_profile_generation=None):
                 ),
             )
         except Exception as e:
-            print(f"SynapsePro: music autoresume error: {e}")
+            log.error(f"SynapsePro: music autoresume error: {e}")
 
     if (mw.state == "deckBrowser"
             and (daily_state_changed or not _dashboard_rendered_with_models)):
@@ -1271,7 +1280,7 @@ def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrow
                 fact_theme, fact_html,
             )
         except Exception as e:
-            print(f"SynapsePro: minimal dashboard render error: {e}")
+            log.error(f"SynapsePro: minimal dashboard render error: {e}")
     else:
         _dashboard_rendered_with_models = bool(
             (not addon_settings.get("gamification_widgets_enabled", True) or gm)
@@ -1290,21 +1299,21 @@ def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrow
                     deck_id=_stats_deck_id,
                     deck_goal_target=_deck_goal_target,
                 )
-            except Exception as e: print(f"SynapsePro: stats widget render error: {e}")
+            except Exception as e: log.error(f"SynapsePro: stats widget render error: {e}")
 
         gam_enabled = bool(addon_settings.get("gamification_widgets_enabled", True) and gm)
         plan_enabled = bool(addon_settings.get("daily_widgets_enabled", True) and lpm)
         risk_html = ""
         if gam_enabled:
             try: risk_html = gm.get_streak_risk_banner_html()
-            except Exception as e: print(f"SynapsePro: streak risk banner error: {e}")
+            except Exception as e: log.error(f"SynapsePro: streak risk banner error: {e}")
             try: risk_html += gm.get_weekly_goal_html(int(addon_settings.get("weekly_goal_cards", 0) or 0))
-            except Exception as e: print(f"SynapsePro: weekly goal card error: {e}")
+            except Exception as e: log.error(f"SynapsePro: weekly goal card error: {e}")
         if gam_enabled and plan_enabled:
             # Common case: both sections on -> one unified grid with the Study
             # Plan card spanning both rows (see _render_unified_widgets_panel).
             try: widgets_panel_html = risk_html + _render_unified_widgets_panel(gm, lpm)
-            except Exception as e: print(f"SynapsePro: widgets panel render error: {e}")
+            except Exception as e: log.error(f"SynapsePro: widgets panel render error: {e}")
         else:
             widgets_panel_html = risk_html
             # Either section can be toggled off independently in Settings; fall
@@ -1320,17 +1329,17 @@ def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrow
                         f'{frag["level"]}{frag["streak"]}{frag["challenge"]}'
                         f'{frag["next_level"]}{frag["reviews_today"]}{frag["reviews_month"]}</div>'
                     )
-                except Exception as e: print(f"SynapsePro: gamification widget render error: {e}")
+                except Exception as e: log.error(f"SynapsePro: gamification widget render error: {e}")
             if plan_enabled:
                 try:
                     widgets_panel_html += (
                         daily_widgets.get_plan_widget_css()
                         + daily_widgets.generate_learning_plan_widget(lpm.get_plan_for_display())
                     )
-                except Exception as e: print(f"SynapsePro: daily widget render error: {e}")
+                except Exception as e: log.error(f"SynapsePro: daily widget render error: {e}")
         if addon_settings.get("deadline_bar_enabled", True) and dm:
             try: deadline_html = dm.render_deadline_bar_html()
-            except Exception as e: print(f"SynapsePro: deadline bar render error: {e}")
+            except Exception as e: log.error(f"SynapsePro: deadline bar render error: {e}")
     
     # Celebration popup (rank-up / level-up / challenge) — deck browser only,
     # so it can never interrupt a review session. Events are consumed from the
@@ -1345,7 +1354,7 @@ def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrow
                 from . import gamification_popup
                 celebrate_html = gamification_popup.render_celebration_modal(events)
     except Exception as e:
-        print(f"SynapsePro: celebration popup error: {e}")
+        log.error(f"SynapsePro: celebration popup error: {e}")
 
     # Stats panel first, then the widgets panel, then Anki's own deck list —
     # both injected sections live in content.tree since Anki renders that
@@ -1371,7 +1380,7 @@ def _plan_timer_cancel(subject: str):
 def _plan_timer_fire(subject: str):
     _plan_timers.pop(subject, None)
     try: tooltip(_("Time's up — finished studying: %s") % subject, period=6000)
-    except Exception as e: print(f"SynapsePro plan timer notify error: {e}")
+    except Exception as e: log.error(f"SynapsePro plan timer notify error: {e}")
 
 def _plan_timer_start(subject: str, end_ms: int):
     _plan_timer_cancel(subject)
@@ -1384,7 +1393,7 @@ def _plan_timer_start(subject: str, end_ms: int):
         t.start(delay)
         _plan_timers[subject] = t
     except Exception as e:
-        print(f"SynapsePro plan timer start error: {e}")
+        log.error(f"SynapsePro plan timer start error: {e}")
 
 def _handle_plan_timer(cmd: str):
     import urllib.parse as _up
@@ -1419,7 +1428,7 @@ def _init_os_notifications():
             _notification_timer.timeout.connect(_check_os_notification_schedule)
             _notification_timer.start(60000)
     except Exception as e:
-        print(f"SynapsePro: OS notification init error: {e}")
+        log.error(f"SynapsePro: OS notification init error: {e}")
 
 
 def _check_os_notification_schedule():
@@ -1451,7 +1460,7 @@ def _check_os_notification_schedule():
                 8000,
             )
     except Exception as e:
-        print(f"SynapsePro: OS notification check error: {e}")
+        log.error(f"SynapsePro: OS notification check error: {e}")
 
 
 # --- Scheduled dashboard theme (Recommendation #13) ------------------------
@@ -1472,7 +1481,7 @@ def _init_theme_schedule():
             _theme_schedule_timer.start(60000)
             _check_theme_schedule()
     except Exception as e:
-        print(f"SynapsePro: theme schedule init error: {e}")
+        log.error(f"SynapsePro: theme schedule init error: {e}")
 
 
 def _is_scheduled_dark_now() -> bool:
@@ -1500,7 +1509,7 @@ def _check_theme_schedule():
         theme_manager.theme = Theme.DARK if want_dark else Theme.LIGHT
         _theme_schedule_last_applied = desired
     except Exception as e:
-        print(f"SynapsePro: theme schedule apply error: {e}")
+        log.error(f"SynapsePro: theme schedule apply error: {e}")
 
 
 def _export_dashboard_snapshot():
@@ -1540,7 +1549,7 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
     cmd = message[6:]
     if cmd.startswith("planTimer:"):
         try: _handle_plan_timer(cmd)
-        except Exception as e: print(f"SynapsePro plan timer error: {e}")
+        except Exception as e: log.error(f"SynapsePro plan timer error: {e}")
         return (True, None)
     if cmd.startswith("synapsepro:planOpenDeck:"):
         try:
@@ -1550,7 +1559,7 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
                 mw.col.startTimebox()
                 mw.moveToState("review")
         except Exception as e:
-            print(f"SynapsePro: plan deck-open error: {e}")
+            log.error(f"SynapsePro: plan deck-open error: {e}")
         return (True, None)
     if cmd == CMD_RESET_DATA:
         gm = getattr(mw, 'gamification_manager', None)
@@ -1564,7 +1573,7 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
                 if gamification_sidebar:
                     gamification_sidebar.update_display()
             except Exception as e:
-                print(f"SynapsePro: claim challenge error: {e}")
+                log.error(f"SynapsePro: claim challenge error: {e}")
         return (True, None)
     if cmd == "synapsepro:challenge_settings":
         gm = getattr(mw, 'gamification_manager', None)
@@ -1572,7 +1581,7 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
             try:
                 ChallengeConfigDialog(gm, parent=mw).exec()
             except Exception as e:
-                print(f"SynapsePro: ChallengeConfigDialog error: {e}")
+                log.error(f"SynapsePro: ChallengeConfigDialog error: {e}")
         if mw.state == "deckBrowser":
             mw.deckBrowser.refresh()
         return (True, None)
@@ -1588,14 +1597,14 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
             try:
                 DeadlineViewerDialog(dm, parent=mw).exec()
             except Exception as e:
-                print(f"SynapsePro: DeadlineViewerDialog error: {e}")
+                log.error(f"SynapsePro: DeadlineViewerDialog error: {e}")
             if mw.state == "deckBrowser":
                 mw.deckBrowser.refresh()
         elif cmd == "synapsepro:deadline_settings":
             try:
                 DeadlineConfigDialog(dm, parent=mw).exec()
             except Exception as e:
-                print(f"SynapsePro: DeadlineConfigDialog error: {e}")
+                log.error(f"SynapsePro: DeadlineConfigDialog error: {e}")
             if mw.state == "deckBrowser":
                 mw.deckBrowser.refresh()
         return (True, None)
@@ -1604,7 +1613,7 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
         try:
             StudyPlanViewerDialog(lpm, study_plan_config_json_path, parent=mw).exec()
         except Exception as e:
-            print(f"SynapsePro: StudyPlanViewerDialog error: {e}")
+            log.error(f"SynapsePro: StudyPlanViewerDialog error: {e}")
         if mw.state == "deckBrowser":
             mw.deckBrowser.refresh()
         return (True, None)
@@ -1613,7 +1622,7 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
         try:
             show_configuration_dialog()
         except Exception as e:
-            print(f"SynapsePro: study plan config error: {e}")
+            log.error(f"SynapsePro: study plan config error: {e}")
         if mw.state == "deckBrowser":
             mw.deckBrowser.refresh()
         return (True, None)
@@ -1625,7 +1634,7 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
                 addon_settings["weekly_goal_cards"] = int(dlg.value)
                 save_addon_settings()
         except Exception as e:
-            print(f"SynapsePro: weekly goal dialog error: {e}")
+            log.error(f"SynapsePro: weekly goal dialog error: {e}")
         if mw.state == "deckBrowser":
             mw.deckBrowser.refresh()
         return (True, None)
@@ -1636,7 +1645,7 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
             try:
                 gm.show_rank_overview_dialog(parent=mw)
             except Exception as e:
-                print(f"SynapsePro: rank overview dialog error: {e}")
+                log.error(f"SynapsePro: rank overview dialog error: {e}")
         return (True, None)
     # Drag-and-drop reorder of the 6 small widget cards.
     if cmd.startswith("synapsepro:reorder_widgets:"):
@@ -1652,7 +1661,7 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
                 addon_settings["widget_order"] = valid[:len(_DEFAULT_WIDGET_ORDER)]
                 save_addon_settings()
         except Exception as e:
-            print(f"SynapsePro: reorder widgets error: {e}")
+            log.error(f"SynapsePro: reorder widgets error: {e}")
         if mw.state == "deckBrowser":
             mw.deckBrowser.refresh()
         return (True, None)
@@ -1663,7 +1672,7 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
             addon_settings["stats_deck_filter"] = int(raw) if raw.isdigit() and raw != "0" else None
             save_addon_settings()
         except Exception as e:
-            print(f"SynapsePro: stats deck filter error: {e}")
+            log.error(f"SynapsePro: stats deck filter error: {e}")
         if mw.state == "deckBrowser":
             mw.deckBrowser.refresh()
         return (True, None)
@@ -1686,7 +1695,7 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
                     addon_settings["deck_goals"] = goals
                     save_addon_settings()
             except Exception as e:
-                print(f"SynapsePro: deck goal dialog error: {e}")
+                log.error(f"SynapsePro: deck goal dialog error: {e}")
         if mw.state == "deckBrowser":
             mw.deckBrowser.refresh()
         return (True, None)
@@ -1695,7 +1704,7 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
         try:
             _export_dashboard_snapshot()
         except Exception as e:
-            print(f"SynapsePro: export snapshot error: {e}")
+            log.error(f"SynapsePro: export snapshot error: {e}")
         return (True, None)
     if cmd == "synapsepro:gamification_viewer":
         toggle_gamification_sidebar()
@@ -1706,7 +1715,7 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
             statistics_widget.show_statistics_info_dialog(
                 parent=mw, stats_days=int(addon_settings.get("stats_time_range", 7)))
         except Exception as e:
-            print(f"SynapsePro: statistics info dialog error: {e}")
+            log.error(f"SynapsePro: statistics info dialog error: {e}")
         return (True, None)
     # "Don't show again" checkbox in the gamification celebration popup.
     if cmd == "synapsepro:celebrate_optout:1":
@@ -1767,7 +1776,7 @@ def inject_theme_assets(web_content: WebContent, context: Optional[Any]):
                 "}catch(e){}})();</script>"
             )
 
-    except Exception as e: print(f"SynapsePro: CSS injection error: {e}")
+    except Exception as e: log.error(f"SynapsePro: CSS injection error: {e}")
 
 _synapse_tools_menu = None
 
@@ -1790,6 +1799,31 @@ def _add_menus():
     m.addAction(_("Configure Study Plan..."), show_configuration_dialog)
     m.addSeparator()
     m.addAction(_("Toggle Gamification Sidebar"), toggle_gamification_sidebar)
+    m.addSeparator()
+    m.addAction(_("Copy Diagnostic Log"), _copy_diagnostic_log_to_clipboard)
+
+
+def _copy_diagnostic_log_to_clipboard():
+    """Puts recent SynapsePro log lines on the clipboard for bug reports.
+
+    Contains no card content, API keys, or personal data — only the
+    module-tagged status/error lines the add-on already logs internally.
+    """
+    from .logging_util import get_log_file_path, read_log_tail
+    from aqt.qt import QApplication
+    text = read_log_tail()
+    path = get_log_file_path()
+    if not text:
+        QApplication.clipboard().setText(
+            f"SynapsePro: no log entries yet.\n({path or 'log not initialized'})"
+        )
+        if mw:
+            tooltip(_("No log entries yet."))
+        return
+    header = f"SynapsePro diagnostic log ({path})\n{'-' * 40}\n"
+    QApplication.clipboard().setText(header + text)
+    if mw:
+        tooltip(_("Diagnostic log copied to clipboard."))
 
 # --- Init Hooks ---
 if modules_loaded and mw and gui_hooks:
@@ -1811,4 +1845,4 @@ if modules_loaded and mw and gui_hooks:
     if hasattr(gui_hooks, "sync_did_finish"):
         gui_hooks.sync_did_finish.append(on_sync_finished)
     
-    print(f"SynapsePro1 loaded.")
+    log.debug(f"SynapsePro1 loaded.")

@@ -11,6 +11,12 @@ from .locales import _
 from .theme import palette
 from . import statistics_widget
 
+try:
+    from .logging_util import get_logger
+except ImportError:
+    from logging_util import get_logger  # type: ignore
+log = get_logger(__name__)
+
 
 def _int(value: Any, default: int = 0) -> int:
     try:
@@ -108,7 +114,7 @@ def render_minimal_dashboard_sections(
             next_level_progress = _percent(gamification_manager.get_progress_percentage())
             remaining_xp = max(0, _int(gamification_manager.get_remaining_xp()))
         except Exception as exc:
-            print(f"SynapsePro: minimal gamification render error: {exc}")
+            log.error(f"SynapsePro: minimal gamification render error: {exc}")
 
     challenge_progress = _percent(
         (challenge_current / max(1, challenge_target)) * 100.0
@@ -151,7 +157,7 @@ def render_minimal_dashboard_sections(
                 deadline_progress = _percent(deadline.get("progress", 0))
                 deadline_tooltip = deadline.get("tooltip") or deadline_title
         except Exception as exc:
-            print(f"SynapsePro: minimal deadline render error: {exc}")
+            log.error(f"SynapsePro: minimal deadline render error: {exc}")
 
     try:
         stats = statistics_widget.get_minimal_statistics_data(
@@ -161,7 +167,7 @@ def render_minimal_dashboard_sections(
         retention = _percent(stats.get("retention_percent", 0))
         new_cards = _percent(stats.get("new_cards_percent", 0))
     except Exception as exc:
-        print(f"SynapsePro: minimal statistics render error: {exc}")
+        log.error(f"SynapsePro: minimal statistics render error: {exc}")
         chart_html = ""
         retention = 0.0
         new_cards = 0.0

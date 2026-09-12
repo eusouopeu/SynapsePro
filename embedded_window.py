@@ -25,6 +25,12 @@ from aqt.qt import (
 )
 
 try:
+    from .logging_util import get_logger
+except ImportError:
+    from logging_util import get_logger  # type: ignore
+log = get_logger(__name__)
+
+try:
     from .locales import _
 except ImportError:
     def _(text):  # type: ignore
@@ -69,7 +75,7 @@ def repair_top_toolbar() -> None:
         if toolbar is not None:
             toolbar.draw()
     except (RuntimeError, AttributeError) as exc:
-        print(f"SynapsePro: could not restore top toolbar: {exc}")
+        log.debug(f"SynapsePro: could not restore top toolbar: {exc}")
 
 
 def is_active() -> bool:

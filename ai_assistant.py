@@ -21,6 +21,12 @@ import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional
 
+try:
+    from .logging_util import get_logger
+except ImportError:
+    from logging_util import get_logger  # type: ignore
+log = get_logger(__name__)
+
 # ── Local imports ─────────────────────────────────────────────────────────────
 try:
     from . import constants
@@ -52,9 +58,9 @@ try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
     from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage, QWebEngineSettings
     _qt_ok = True
-    print("AI Assistant: Qt6 loaded OK")
+    log.debug("AI Assistant: Qt6 loaded OK")
 except ImportError as _e:
-    print(f"AI Assistant: Qt import FAILED – {_e}")
+    log.error(f"AI Assistant: Qt import FAILED – {_e}")
     QWidget = QVBoxLayout = QDockWidget = QSizePolicy = object  # type: ignore[misc,assignment]
     QDialog = QDialogButtonBox = QLabel = QPushButton = object  # type: ignore[misc,assignment]
     QHBoxLayout = QProgressBar = QListWidget = QListWidgetItem = object  # type: ignore[misc,assignment]
@@ -69,9 +75,9 @@ try:
     from aqt.reviewer import Reviewer
     from aqt.utils import tooltip, qconnect, showWarning
     _anki_ok = True
-    print("AI Assistant: Anki imports OK")
+    log.debug("AI Assistant: Anki imports OK")
 except ImportError as _e:
-    print(f"AI Assistant: Anki import FAILED – {_e}")
+    log.error(f"AI Assistant: Anki import FAILED – {_e}")
     mw = gui_hooks = None  # type: ignore[assignment]
     Reviewer = object  # type: ignore[assignment,misc]
     def tooltip(msg, *a, **k): print(f"[tooltip] {msg}")
@@ -178,7 +184,7 @@ if _qt_ok and QObject is not object and pyqtSignal is not object:
             # Qt.ConnectionType.QueuedConnection is the default for cross-thread
             # signals but we spell it out for clarity.
             self._sig.connect(self._execute, Qt.ConnectionType.QueuedConnection)
-            print("AI Assistant: JS dispatcher created (signal/slot bridge)")
+            log.debug("AI Assistant: JS dispatcher created (signal/slot bridge)")
 
         def _execute(self, code: str, generation: int) -> None:
             """Runs on the main thread via the event loop."""
@@ -192,7 +198,7 @@ if _qt_ok and QObject is not object and pyqtSignal is not object:
 else:
     class _JsDispatcher:  # type: ignore[no-redef]
         def dispatch(self, code: str, generation: int) -> None:
-            print(f"AI Assistant: _JsDispatcher stub – Qt not available. code: {code[:60]}")
+            log.debug(f"AI Assistant: _JsDispatcher stub – Qt not available. code: {code[:60]}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -213,7 +219,7 @@ def _secret_path() -> Optional[str]:
         os.makedirs(folder, exist_ok=True)
         return os.path.join(folder, "ai_secrets.json")
     except Exception as exc:
-        print(f"AI Assistant: secret path error: {exc}")
+        log.error(f"AI Assistant: secret path error: {exc}")
         return None
 
 
@@ -227,7 +233,7 @@ def _load_secret_map() -> Dict[str, str]:
         if isinstance(value, dict):
             return {str(k): str(v) for k, v in value.items() if isinstance(v, str)}
     except Exception as exc:
-        print(f"AI Assistant: secret file read error: {exc}")
+        log.error(f"AI Assistant: secret file read error: {exc}")
     return {}
 
 
@@ -245,7 +251,7 @@ def _save_secret_map(values: Dict[str, str]) -> None:
             pass
         os.replace(tmp, path)
     except Exception as exc:
-        print(f"AI Assistant: secret file write error: {exc}")
+        log.error(f"AI Assistant: secret file write error: {exc}")
         try:
             if os.path.exists(tmp):
                 os.remove(tmp)
@@ -273,7 +279,7 @@ def _secret_get(key: str, default: Any = "") -> Any:
                     mw.col.set_config(key, "")
                 return values[key]
         except Exception as exc:
-            print(f"AI Assistant: secret migration error for '{key}': {exc}")
+            log.error(f"AI Assistant: secret migration error for '{key}': {exc}")
     return default
 
 
@@ -293,7 +299,7 @@ def _cfg_get(key: str, default: Any = "") -> Any:
         try:
             return mw.col.get_config(key, default)
         except Exception as e:
-            print(f"AI Assistant: config read error for '{key}': {e}")
+            log.error(f"AI Assistant: config read error for '{key}': {e}")
     return default
 
 def _cfg_set(key: str, value: Any) -> None:
@@ -304,7 +310,7 @@ def _cfg_set(key: str, value: Any) -> None:
         try:
             mw.col.set_config(key, value)
         except Exception as e:
-            print(f"AI Assistant: config write error for '{key}': {e}")
+            log.error(f"AI Assistant: config write error for '{key}': {e}")
 
 def _load_settings() -> Dict[str, Any]:
     provider = _cfg_get(CK_PROVIDER, "openai")
@@ -387,7 +393,7 @@ def _save_settings_dict(data: Dict[str, Any]) -> None:
 
     _ep_log = ollama_ep if provider == "ollama" else (
         llama_ep if provider == "llamaserver" else "n/a")
-    print(f"AI Assistant: settings saved — provider={provider}, model={model}, "
+    log.debug(f"AI Assistant: settings saved — provider={provider}, model={model}, "
           f"endpoint={_ep_log}, "
           f"key={'(set)' if api_key else '(empty)'}")
 
@@ -529,7 +535,7 @@ def _stream_openai_compat(
     OpenAI endpoint (required by o-series / reasoning models; ``max_tokens`` is
     deprecated there), while OpenRouter and llama.cpp keep ``max_tokens``.
     """
-    print(f"AI Assistant: streaming OpenAI-compat url={url.split('/')[2]}, model={model}")
+    log.debug(f"AI Assistant: streaming OpenAI-compat url={url.split('/')[2]}, model={model}")
     payload = json.dumps({
         "model": model, "messages": messages, token_param: 2048, "stream": True,
     }).encode("utf-8")
@@ -574,7 +580,7 @@ def _stream_gemini(
     on_chunk: Callable[[str], None],
 ) -> None:
     """Gemini streaming via SSE (alt=sse)."""
-    print(f"AI Assistant: streaming Gemini, model={model}")
+    log.debug(f"AI Assistant: streaming Gemini, model={model}")
     contents: list = []
     system_parts: list = []
     for m in messages:
@@ -622,7 +628,7 @@ def _stream_anthropic(
     on_chunk: Callable[[str], None],
 ) -> None:
     """Anthropic streaming via SSE."""
-    print(f"AI Assistant: streaming Anthropic, model={model}")
+    log.debug(f"AI Assistant: streaming Anthropic, model={model}")
     system    = next((m["content"] for m in messages if m["role"] == "system"), None)
     user_msgs = [m for m in messages if m["role"] != "system"]
     payload_dict: Dict[str, Any] = {
@@ -665,7 +671,7 @@ def _stream_ollama(
     on_chunk: Callable[[str], None],
 ) -> None:
     """Ollama streaming via newline-delimited JSON."""
-    print(f"AI Assistant: streaming Ollama, model={model}, endpoint={endpoint}")
+    log.debug(f"AI Assistant: streaming Ollama, model={model}, endpoint={endpoint}")
     payload = json.dumps({
         "model": model, "messages": messages, "stream": True,
     }).encode("utf-8")
@@ -697,16 +703,16 @@ def _run_js(code: str) -> None:
     """Run JS in the webview (must be called from the main thread)."""
     global _webview
     if not _webview:
-        print(f"AI Assistant: _run_js called but webview is None. code: {code[:60]}")
+        log.debug(f"AI Assistant: _run_js called but webview is None. code: {code[:60]}")
         return
     try:
         page = _webview.page()
         if page:
             page.runJavaScript(code)
         else:
-            print("AI Assistant: _run_js called but page is None")
+            log.debug("AI Assistant: _run_js called but page is None")
     except Exception as e:
-        print(f"AI Assistant: runJavaScript error: {e}")
+        log.error(f"AI Assistant: runJavaScript error: {e}")
 
 def _js_on_main(code: str, generation: Optional[int] = None) -> None:
     """Thread-safe: run JS on the Qt main thread via the signal dispatcher.
@@ -719,7 +725,7 @@ def _js_on_main(code: str, generation: Optional[int] = None) -> None:
         _dispatcher.dispatch(code, target_generation)
     else:
         # Fallback before dispatcher is initialised (should be rare)
-        print(f"AI Assistant: _js_on_main – dispatcher not ready, code: {code[:60]}")
+        log.debug(f"AI Assistant: _js_on_main – dispatcher not ready, code: {code[:60]}")
         if _qt_ok and QTimer is not object:
             QTimer.singleShot(
                 0,
@@ -828,7 +834,7 @@ def _run_api_in_thread(settings: Dict[str, Any], messages: List[Dict]) -> None:
             _conversation.append({"role": "assistant", "content": text})
             _trim_conversation()
             _js_on_main("finalizeResponse();", request_generation)
-            print(f"AI Assistant: streaming done [{provider}] ({len(text)} chars)")
+            log.debug(f"AI Assistant: streaming done [{provider}] ({len(text)} chars)")
 
         except Exception as exc:
             err_msg = _classify_error(exc, provider)
@@ -836,9 +842,9 @@ def _run_api_in_thread(settings: Dict[str, Any], messages: List[Dict]) -> None:
                          TimeoutError, socket.timeout, json.JSONDecodeError,
                          RuntimeError)
             if isinstance(exc, _EXPECTED):
-                print(f"AI Assistant: API error [{provider}] {type(exc).__name__}: {exc}")
+                log.error(f"AI Assistant: API error [{provider}] {type(exc).__name__}: {exc}")
             else:
-                print(f"AI Assistant: unexpected error [{provider}]:")
+                log.error(f"AI Assistant: unexpected error [{provider}]:")
                 traceback.print_exc()
 
             if full_text:
@@ -879,7 +885,7 @@ _SYSTEM_MSG: Dict[str, str] = {
 def _reset_conversation() -> None:
     global _conversation
     _conversation = [dict(_SYSTEM_MSG)]
-    print("AI Assistant: conversation history reset")
+    log.debug("AI Assistant: conversation history reset")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -888,7 +894,7 @@ def _reset_conversation() -> None:
 
 def _get_card_content() -> Optional[str]:
     if not _anki_ok or not mw or mw.state != "review":
-        print("AI Assistant: _get_card_content – not in review state")
+        log.debug("AI Assistant: _get_card_content – not in review state")
         return None
     try:
         rev: Any = mw.reviewer
@@ -903,7 +909,7 @@ def _get_card_content() -> Optional[str]:
             if cleaned:
                 fields.append((str(field_name), cleaned))
         if not fields:
-            print("AI Assistant: no readable card fields found")
+            log.debug("AI Assistant: no readable card fields found")
             return None
 
         def preferred(names, excluded_name=""):
@@ -928,10 +934,10 @@ def _get_card_content() -> Optional[str]:
             selected = front_pair[1]
 
         selected = _limit_card_context(selected)
-        print(f"AI Assistant: current card context prepared ({len(selected)} chars)")
+        log.debug(f"AI Assistant: current card context prepared ({len(selected)} chars)")
         return selected or None
     except Exception as e:
-        print(f"AI Assistant: _get_card_content error: {e}")
+        log.error(f"AI Assistant: _get_card_content error: {e}")
         return None
 
 
@@ -1034,7 +1040,7 @@ def _build_chip_prompt(action: str, content: str) -> str:
     if action == "own":
         template = _cfg_get(CK_OWN_PROMPT, DEFAULT_OWN_PROMPT)
         if "{content}" not in template:
-            print("AI Assistant: own prompt template missing {content}, using default")
+            log.debug("AI Assistant: own prompt template missing {content}, using default")
             template = DEFAULT_OWN_PROMPT
         return template.replace("{content}", f'"{content}"') + f" {lang}"
     return f'Tell me about "{content}" {lang}.'
@@ -1066,13 +1072,13 @@ if _qt_ok and QWebEnginePage is not object:
                 try:
                     data = json.loads(data_str)
                 except json.JSONDecodeError as e:
-                    print(f"AI Assistant: PYCALL JSON parse error "
+                    log.error(f"AI Assistant: PYCALL JSON parse error "
                           f"(action='{action}'): {e} | raw='{data_str[:80]}'")
-                print(f"AI Assistant: bridge received action='{action}'")
+                log.debug(f"AI Assistant: bridge received action='{action}'")
                 try:
                     _handle_action(action, data)
                 except Exception as e:
-                    print(f"AI Assistant: action '{action}' handler error: {e}")
+                    log.error(f"AI Assistant: action '{action}' handler error: {e}")
                     traceback.print_exc()
                 return
 
@@ -1087,7 +1093,7 @@ if _qt_ok and QWebEnginePage is not object:
 
 else:
     ChatPage = QWebEnginePage  # type: ignore[assignment,misc]
-    print("AI Assistant: WARNING – ChatPage fallback, bridge disabled")
+    log.debug("AI Assistant: WARNING – ChatPage fallback, bridge disabled")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1112,12 +1118,12 @@ def _handle_action(action: str, data: Dict[str, Any]) -> None:
     if handler:
         handler(data)
     else:
-        print(f"AI Assistant: unknown action '{action}'")
+        log.debug(f"AI Assistant: unknown action '{action}'")
 
 
 def _action_page_ready(_data: Dict[str, Any]) -> None:
     """HTML page finished loading and is ready to receive init()."""
-    print("AI Assistant: page_ready received – injecting init config")
+    log.debug("AI Assistant: page_ready received – injecting init config")
     _reset_conversation()
     _inject_init()
     # Apply the current review state now that the page's JS exists. Without this,
@@ -1130,18 +1136,18 @@ def _action_page_ready(_data: Dict[str, Any]) -> None:
 def _action_send_message(data: Dict[str, Any]) -> None:
     text = (data.get("text") or "").strip()
     if not text:
-        print("AI Assistant: send_message called with empty text")
+        log.debug("AI Assistant: send_message called with empty text")
         return
 
     settings = _load_settings()
     provider = settings["provider"]
     api_key  = settings["apiKey"]
 
-    print(f"AI Assistant: send_message provider={provider}, "
+    log.debug(f"AI Assistant: send_message provider={provider}, "
           f"model={settings['model']}, key={'(set)' if api_key else '(empty)'}")
 
     if not _is_configured(provider, api_key):
-        print("AI Assistant: not configured – showing error")
+        log.error("AI Assistant: not configured – showing error")
         _run_js('receiveResponse("No API key configured. Open Settings (⚙) and enter your API key.", true);')
         return
 
@@ -1192,7 +1198,7 @@ def _action_chip(data: Dict[str, Any]) -> None:
     if action == "custom":
         template = data.get("prompt", "").strip()
         if not template:
-            print("AI Assistant: custom chip called with empty prompt")
+            log.debug("AI Assistant: custom chip called with empty prompt")
             return
         lang   = _lang_suffix()
         prompt = template.replace("{content}", f'"{content}"')
@@ -1201,7 +1207,7 @@ def _action_chip(data: Dict[str, Any]) -> None:
     else:
         prompt = _build_chip_prompt(action, content)
 
-    print(f"AI Assistant: chip '{action}' label='{label}' prepared")
+    log.debug(f"AI Assistant: chip '{action}' label='{label}' prepared")
 
     # Send only the label to JS (not the full prompt) — no user bubble shown
     _run_js(f"receiveChipPrompt({json.dumps(label)});")
@@ -1228,24 +1234,24 @@ def _action_save_chips(data: Dict[str, Any]) -> None:
     if isinstance(config, dict):
         _cfg_set(CK_CHIPS, config)
         custom_count = len(config.get("custom", []))
-        print(f"AI Assistant: chips config saved, custom_count={custom_count}")
+        log.debug(f"AI Assistant: chips config saved, custom_count={custom_count}")
 
 
 def _action_check_ollama(_data: Optional[Dict] = None) -> None:
     """Check if Ollama is running; send result to JS."""
-    print("AI Assistant: checking Ollama status…")
+    log.debug("AI Assistant: checking Ollama status…")
 
     def worker():
         ep = _cfg_get(CK_OLLAMA_EP, OLLAMA_EP_DEFAULT)
-        print(f"AI Assistant: connecting to Ollama at {ep}")
+        log.debug(f"AI Assistant: connecting to Ollama at {ep}")
         try:
             with urllib.request.urlopen(f"{ep}/api/tags", timeout=5) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
             models = [m["name"] for m in result.get("models", [])]
-            print(f"AI Assistant: Ollama running, models={models}")
+            log.debug(f"AI Assistant: Ollama running, models={models}")
             _js_on_main(f"setOllamaStatus('running', {json.dumps(models)});")
         except Exception as exc:
-            print(f"AI Assistant: Ollama check failed: {exc}")
+            log.error(f"AI Assistant: Ollama check failed: {exc}")
             _js_on_main("setOllamaStatus('stopped', []);")
 
     threading.Thread(target=worker, daemon=True).start()
@@ -1253,12 +1259,12 @@ def _action_check_ollama(_data: Optional[Dict] = None) -> None:
 
 def _action_check_llama(_data: Optional[Dict] = None) -> None:
     """Check if a llama.cpp server is reachable; send result + models to JS."""
-    print("AI Assistant: checking llama.cpp server status…")
+    log.debug("AI Assistant: checking llama.cpp server status…")
 
     def worker():
         ep = _cfg_get(CK_LLAMA_EP, LLAMA_EP_DEFAULT).rstrip("/")
         key = _cfg_get(CK_KEY_LLAMA, "")
-        print(f"AI Assistant: connecting to llama.cpp server at {ep}")
+        log.debug(f"AI Assistant: connecting to llama.cpp server at {ep}")
         try:
             req = urllib.request.Request(f"{ep}/v1/models")
             if key:
@@ -1266,24 +1272,24 @@ def _action_check_llama(_data: Optional[Dict] = None) -> None:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
             models = [m["id"] for m in result.get("data", []) if m.get("id")]
-            print(f"AI Assistant: llama.cpp server running, models={models}")
+            log.debug(f"AI Assistant: llama.cpp server running, models={models}")
             _js_on_main(f"setLlamaStatus('running', {json.dumps(models)});")
         except Exception as exc:
-            print(f"AI Assistant: llama.cpp check failed: {exc}")
+            log.error(f"AI Assistant: llama.cpp check failed: {exc}")
             _js_on_main("setLlamaStatus('stopped', []);")
 
     threading.Thread(target=worker, daemon=True).start()
 
 
 def _action_setup_ollama(_data: Optional[Dict] = None) -> None:
-    print("AI Assistant: opening Ollama wizard")
+    log.debug("AI Assistant: opening Ollama wizard")
     if _qt_ok and _anki_ok and mw and QTimer is not object:
         QTimer.singleShot(0, _open_ollama_wizard)
 
 
 def _action_clear_history(_data: Optional[Dict] = None) -> None:
     _reset_conversation()
-    print("AI Assistant: chat history cleared")
+    log.debug("AI Assistant: chat history cleared")
 
 
 # Only these exact pages may be opened from the chat UI (safety allowlist).
@@ -1303,7 +1309,7 @@ def _action_open_url(data: Dict[str, Any]) -> None:
     """Open an allowlisted URL in the system browser (main thread)."""
     url = str(data.get("url", "")).strip()
     if url not in _ALLOWED_URLS:
-        print(f"AI Assistant: open_url blocked (not allowlisted): {url[:80]}")
+        log.debug(f"AI Assistant: open_url blocked (not allowlisted): {url[:80]}")
         return
 
     def _open() -> None:
@@ -1311,7 +1317,7 @@ def _action_open_url(data: Dict[str, Any]) -> None:
             import webbrowser
             webbrowser.open(url)
         except Exception as e:
-            print(f"AI Assistant: open_url error: {e}")
+            log.error(f"AI Assistant: open_url error: {e}")
 
     if _qt_ok and QTimer is not object:
         QTimer.singleShot(0, _open)
@@ -1481,7 +1487,7 @@ if _qt_ok and QDialog is not object:
             try:
                 mw.taskman.run_on_main(_run)
             except Exception as exc:
-                print(f"AI Assistant Wizard: main-thread dispatch failed: {exc}")
+                log.error(f"AI Assistant Wizard: main-thread dispatch failed: {exc}")
 
         def _check_ollama(self) -> None:
             self._stack.setCurrentIndex(0)
@@ -1492,7 +1498,7 @@ if _qt_ok and QDialog is not object:
                     models = [m["name"] for m in data.get("models", [])]
                     self._post_to_main(lambda: self._on_found(models))
                 except Exception as exc:
-                    print(f"AI Assistant Wizard: Ollama check failed: {exc}")
+                    log.error(f"AI Assistant Wizard: Ollama check failed: {exc}")
                     self._post_to_main(self._on_not_found)
             threading.Thread(target=worker, daemon=True).start()
 
@@ -1535,7 +1541,7 @@ if _qt_ok and QDialog is not object:
                     self._post_to_main(lambda: self._on_pull_done(name))
                 except Exception as exc:
                     err = str(exc)
-                    print(f"AI Assistant Wizard: pull error: {err}")
+                    log.error(f"AI Assistant Wizard: pull error: {err}")
                     self._post_to_main(lambda e=err: self._on_pull_error(e))
             self._pull_thread = threading.Thread(target=worker, daemon=True)
             self._pull_thread.start()
@@ -1569,14 +1575,14 @@ else:
 
 def _get_html_path() -> str:
     p = os.path.join(constants.addon_path, HTML_FILENAME)
-    print(f"AI Assistant: HTML path = {p}  exists={os.path.exists(p)}")
+    log.debug(f"AI Assistant: HTML path = {p}  exists={os.path.exists(p)}")
     return p
 
 
 def _inject_init() -> None:
     """Load current settings and inject them into the HTML via init()."""
     settings = _load_settings()
-    print(f"AI Assistant: _inject_init provider={settings['provider']}, "
+    log.debug(f"AI Assistant: _inject_init provider={settings['provider']}, "
           f"model={settings['model']}, configured={settings['isConfigured']}")
 
     if settings["provider"] == "ollama":
@@ -1588,9 +1594,9 @@ def _inject_init() -> None:
                 models = [m["name"] for m in data.get("models", [])]
                 settings["ollamaModels"]  = models
                 settings["ollamaRunning"] = True
-                print(f"AI Assistant: Ollama running at init, models={models}")
+                log.debug(f"AI Assistant: Ollama running at init, models={models}")
             except Exception as exc:
-                print(f"AI Assistant: Ollama not available at init: {exc}")
+                log.debug(f"AI Assistant: Ollama not available at init: {exc}")
                 settings["ollamaModels"]  = []
                 settings["ollamaRunning"] = False
             _js_on_main(f"init({json.dumps(settings)});")
@@ -1614,16 +1620,16 @@ def _setup_sidebar() -> bool:
     global _session_generation
 
     if _dock is not None:
-        print("AI Assistant: sidebar already set up")
+        log.debug("AI Assistant: sidebar already set up")
         return True
     if not _qt_ok:
-        print("AI Assistant: cannot setup – Qt not available")
+        log.debug("AI Assistant: cannot setup – Qt not available")
         return False
     if not _anki_ok:
-        print("AI Assistant: cannot setup – Anki not available")
+        log.debug("AI Assistant: cannot setup – Anki not available")
         return False
 
-    print("AI Assistant: setting up sidebar…")
+    log.debug("AI Assistant: setting up sidebar…")
     _session_generation += 1
     _reset_conversation()
 
@@ -1638,7 +1644,7 @@ def _setup_sidebar() -> bool:
         s = _profile.settings()
         s.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled,   True)
         s.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
-        print("AI Assistant: WebEngine profile created")
+        log.debug("AI Assistant: WebEngine profile created")
 
         # WebView + ChatPage (console.log bridge)
         _webview = QWebEngineView()
@@ -1656,7 +1662,7 @@ def _setup_sidebar() -> bool:
         # Load HTML
         html_path = _get_html_path()
         if not os.path.exists(html_path):
-            print(f"AI Assistant: FATAL – chat_ui.html not found at {html_path}")
+            log.error(f"AI Assistant: FATAL – chat_ui.html not found at {html_path}")
             showWarning(
                 f"AI Assistant: chat_ui.html not found.\n"
                 f"Expected: {html_path}"
@@ -1666,7 +1672,7 @@ def _setup_sidebar() -> bool:
         # page_ready signal from JS will trigger _inject_init()
         # (no fixed-delay injection needed)
         _webview.setUrl(QUrl.fromLocalFile(html_path))
-        print(f"AI Assistant: loading {html_path}")
+        log.debug(f"AI Assistant: loading {html_path}")
 
         # Dock
         _dock = QDockWidget(_("AI Assistant"), mw)
@@ -1692,13 +1698,13 @@ def _setup_sidebar() -> bool:
             if hasattr(_dock, "visibilityChanged"):
                 qconnect(_dock.visibilityChanged, _on_visibility_changed)
             _hooks_connected = True
-            print("AI Assistant: hooks connected")
+            log.debug("AI Assistant: hooks connected")
 
-        print("AI Assistant: sidebar setup complete ✓")
+        log.debug("AI Assistant: sidebar setup complete ✓")
         return True
 
     except Exception as e:
-        print(f"AI Assistant: CRITICAL setup error: {e}")
+        log.error(f"AI Assistant: CRITICAL setup error: {e}")
         traceback.print_exc()
         showWarning(_("AI Assistant setup error: {}").format(e))
         _dock = _webview = _profile = None
@@ -1713,7 +1719,7 @@ def _on_state_change(new_state: str, old_state: str) -> None:
 
 def _on_visibility_changed(visible: bool) -> None:
     if visible:
-        print("AI Assistant: sidebar became visible")
+        log.debug("AI Assistant: sidebar became visible")
         # Re-apply the current SynapsePro accent whenever the existing WebView
         # is shown again, matching the live-refresh behaviour of the Mindmap.
         refresh_ai_assistant_theme()
@@ -1762,7 +1768,7 @@ def toggle_ai_assistant_dock() -> None:
         return
 
     if _dock is None:
-        print("AI Assistant: first toggle – running setup")
+        log.debug("AI Assistant: first toggle – running setup")
         if not _setup_sidebar():
             return
 
@@ -1771,15 +1777,15 @@ def toggle_ai_assistant_dock() -> None:
 
     try:
         if _dock.isHidden():
-            print("AI Assistant: showing dock")
+            log.debug("AI Assistant: showing dock")
             _dock.show()
             _dock.raise_()
             _update_chips()
         else:
-            print("AI Assistant: hiding dock")
+            log.debug("AI Assistant: hiding dock")
             _dock.hide()
     except Exception as e:
-        print(f"AI Assistant: toggle error: {e}")
+        log.error(f"AI Assistant: toggle error: {e}")
         traceback.print_exc()
 
 
@@ -1788,7 +1794,7 @@ def cleanup_ai_assistant_sidebar() -> None:
     global _dock, _webview, _profile, _hooks_connected, _dispatcher
     global _session_generation
 
-    print("AI Assistant: cleanup starting…")
+    log.debug("AI Assistant: cleanup starting…")
     _session_generation += 1
 
     if _hooks_connected and gui_hooks:
@@ -1815,7 +1821,7 @@ def cleanup_ai_assistant_sidebar() -> None:
                 mw.removeDockWidget(_dock)
             _dock.deleteLater()
         except Exception as e:
-            print(f"AI Assistant: cleanup dock error: {e}")
+            log.error(f"AI Assistant: cleanup dock error: {e}")
 
     if _profile:
         try: _profile.deleteLater()
@@ -1826,7 +1832,7 @@ def cleanup_ai_assistant_sidebar() -> None:
 
     _dock = _webview = _profile = _dispatcher = None
     _conversation.clear()
-    print("AI Assistant: cleanup done ✓")
+    log.debug("AI Assistant: cleanup done ✓")
 
 
 # ── Module load ───────────────────────────────────────────────────────────────

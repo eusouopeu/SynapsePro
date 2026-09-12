@@ -13,6 +13,12 @@ from typing import Any, Dict, Optional
 from . import constants
 
 try:
+    from .logging_util import get_logger
+except ImportError:
+    from logging_util import get_logger  # type: ignore
+log = get_logger(__name__)
+
+try:
     from .locales import _
 except Exception:
     def _(text):  # type: ignore
@@ -166,7 +172,7 @@ def _trigger(feature_key: str) -> None:
             from .notebook_sidebar import toggle_notebook_dock
             toggle_notebook_dock()
     except Exception as exc:
-        print(f"SynapsePro shortcut '{feature_key}' failed: {exc}")
+        log.error(f"SynapsePro shortcut '{feature_key}' failed: {exc}")
         try:
             tooltip(_("Could not open this sidebar tool."))
         except Exception:
@@ -223,4 +229,4 @@ def refresh(settings: Optional[Dict[str, Any]]) -> None:
             )
             _registered[feature_key] = shortcut
         except Exception as exc:
-            print(f"SynapsePro: could not register shortcut {portable}: {exc}")
+            log.debug(f"SynapsePro: could not register shortcut {portable}: {exc}")

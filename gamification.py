@@ -13,6 +13,12 @@ from aqt import mw
 from aqt.utils import showInfo, tooltip, askUser, QMessageBox
 
 try:
+    from .logging_util import get_logger
+except ImportError:
+    from logging_util import get_logger  # type: ignore
+log = get_logger(__name__)
+
+try:
     from . import constants
     ADDON_FOLDER_NAME = constants.addon_package_name
 except (ImportError, AttributeError):
@@ -210,7 +216,7 @@ def calculate_streak_from_revlog() -> int:
         return streak
 
     except Exception as e:
-        print(f"SynapsePro: Fehler bei Streak-Berechnung aus revlog: {e}")
+        log.debug(f"SynapsePro: Fehler bei Streak-Berechnung aus revlog: {e}")
         traceback.print_exc()
         return 0
 
@@ -875,7 +881,7 @@ class GamificationManager:
             if changed:
                 self.save_data()
         except Exception as e:
-            print(f"SynapsePro: celebration event check failed: {e}")
+            log.error(f"SynapsePro: celebration event check failed: {e}")
             return {}
         return events
 

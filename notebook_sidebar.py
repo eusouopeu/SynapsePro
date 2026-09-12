@@ -33,6 +33,12 @@ except ImportError:
 
 from . import embedded_window
 
+try:
+    from .logging_util import get_logger
+except ImportError:
+    from logging_util import get_logger  # type: ignore
+log = get_logger(__name__)
+
 ADDON_NAME_FOR_BRIDGE = "notion_mini"
 DB_FILENAME = "notebook.sqlite"
 DOCK_TITLE = "Notebook"
@@ -268,7 +274,7 @@ def _ensure_pdfjs_async() -> None:
     if all(os.path.exists(os.path.join(existing_dir, name))
            for name in _PDFJS_FILES):
         return
-    print("SynapsePro: bundled PDF.js files are missing; PDF viewer disabled.")
+    log.debug("SynapsePro: bundled PDF.js files are missing; PDF viewer disabled.")
 
 
 def _pdfjs_local_scripts() -> tuple[str, str]:
@@ -294,7 +300,7 @@ def _pdfjs_local_scripts() -> tuple[str, str]:
         worker_json = json.dumps(worker_js).replace("</", "<\\/")
         return f"<script>{safe_main}</script>", worker_json
     except Exception as exc:
-        print(f"SynapsePro: could not read PDF.js local files: {exc}")
+        log.debug(f"SynapsePro: could not read PDF.js local files: {exc}")
         return "", ""
 
 

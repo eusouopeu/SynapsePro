@@ -7,6 +7,12 @@ import math
 import html as _html_mod
 from aqt import mw
 
+try:
+    from .logging_util import get_logger
+except ImportError:
+    from logging_util import get_logger  # type: ignore
+log = get_logger(__name__)
+
 # --- Night Mode Detection ---
 is_night_mode = False
 try:
@@ -147,7 +153,7 @@ def get_daily_review_counts(since_days=None, deck_ids=None):
             )
         return {r[0]: r[1] for r in rows}
     except Exception as e:
-        print(f"SynapsePro: review activity query failed: {e}")
+        log.error(f"SynapsePro: review activity query failed: {e}")
         return {}
 
 
@@ -178,7 +184,7 @@ def get_daily_study_minutes(since_days=None, deck_ids=None):
         )
         return {r[0]: (r[1] or 0) / 60000.0 for r in rows}
     except Exception as e:
-        print(f"SynapsePro: study-time-per-day query failed: {e}")
+        log.error(f"SynapsePro: study-time-per-day query failed: {e}")
         return {}
 
 
@@ -415,7 +421,7 @@ def _get_due_forecast(deck_ids=None):
                 counts[idx] = n
         return counts
     except Exception as e:
-        print(f"SynapsePro: due forecast query failed: {e}")
+        log.error(f"SynapsePro: due forecast query failed: {e}")
         return [0] * FORECAST_DAYS
 
 
@@ -475,7 +481,7 @@ def _get_best_study_hour(deck_ids=None):
             *params,
         )
     except Exception as e:
-        print(f"SynapsePro: best-hour query failed: {e}")
+        log.error(f"SynapsePro: best-hour query failed: {e}")
         return None
     best = None
     for hr_str, correct, total in rows:

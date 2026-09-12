@@ -12,6 +12,12 @@ from aqt.utils import tooltip
 import aqt
 
 try:
+    from .logging_util import get_logger
+except ImportError:
+    from logging_util import get_logger  # type: ignore
+log = get_logger(__name__)
+
+try:
     from .locales import _
 except ImportError:
     def _(text):  # type: ignore
@@ -520,7 +526,7 @@ def _session_summary_inner():
             f'</div></div>'
         )
     except Exception as e:
-        print(f"SynapsePro: session summary error: {e}")
+        log.error(f"SynapsePro: session summary error: {e}")
         return ""
 
 
@@ -552,7 +558,7 @@ def inject_session_summary_into_congrats():
         )
         mw.web.eval(js)
     except Exception as e:
-        print(f"SynapsePro: congrats summary inject failed: {e}")
+        log.error(f"SynapsePro: congrats summary inject failed: {e}")
 
 
 def on_overview_render(web, ctx):
@@ -645,7 +651,7 @@ def on_overview_render(web, ctx):
         """
         web.body = page_html
     except Exception as e:
-        print(f"SynapsePro Deck Overview Error: {e}")
+        log.error(f"SynapsePro Deck Overview Error: {e}")
 
 def init_deck_overview():
     global _hooks_registered

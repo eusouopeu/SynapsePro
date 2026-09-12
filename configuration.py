@@ -717,7 +717,7 @@ class LearningPlanConfigDialog(QDialog):
                 value = json.load(f)
             return value if isinstance(value, dict) else {}
         except Exception as exc:
-            print(f"SynapsePro: could not read study plan: {exc}")
+            log.debug(f"SynapsePro: could not read study plan: {exc}")
             return {}
 
     def _save_plan_to_file(self):
@@ -858,6 +858,12 @@ def _import_painter_tools():
 
 
 from aqt.qt import pyqtSignal as _pyqtSignal
+
+try:
+    from .logging_util import get_logger
+except ImportError:
+    from logging_util import get_logger  # type: ignore
+log = get_logger(__name__)
 
 
 class _TimelineWidget(QWidget):

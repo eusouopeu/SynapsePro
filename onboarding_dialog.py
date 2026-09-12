@@ -24,6 +24,12 @@ get_result().
 import os
 import json
 
+try:
+    from .logging_util import get_logger
+except ImportError:
+    from logging_util import get_logger  # type: ignore
+log = get_logger(__name__)
+
 # --- Translation ---
 try:
     from .locales import _, TRANSLATIONS
@@ -93,7 +99,7 @@ if _QT_AVAILABLE:
                     payload = json.loads(message[len("SYNAPSEPRO_COMPLETE:"):])
                     self.completed.emit(payload)
                 except Exception as e:
-                    print(f"SynapsePro Onboarding: Failed to parse completion payload: {e}")
+                    log.error(f"SynapsePro Onboarding: Failed to parse completion payload: {e}")
             # All other console output is silently swallowed (no dev-console in prod).
 
 
@@ -144,7 +150,7 @@ if _QT_AVAILABLE:
                     pass
                 self.view.load(QUrl.fromLocalFile(html_path))
             else:
-                print(f"SynapsePro Onboarding: HTML file not found at {html_path!r}")
+                log.debug(f"SynapsePro Onboarding: HTML file not found at {html_path!r}")
                 self.accept()  # Skip gracefully so the addon still initialises
 
         def _on_load_finished(self, ok: bool):
@@ -201,7 +207,7 @@ else:
     # Keeps the addon from crashing; onboarding is simply skipped.
     class OnboardingWizard:          # type: ignore[no-redef]
         def __init__(self, addon_path, parent=None):
-            print("SynapsePro Onboarding: QWebEngineView not available, skipping.")
+            log.debug("SynapsePro Onboarding: QWebEngineView not available, skipping.")
 
         def exec(self) -> bool:
             return False
