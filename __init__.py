@@ -77,7 +77,7 @@ try:
     from .mindmap_sidebar import cleanup_mindmap_sidebar    
     from .notebook_sidebar import cleanup_notebook_sidebar, setup_notebook_sidebar, toggle_notebook_dock
     from . import deck_overview, sidebar_shortcuts
-    from . import statistics_widget, daily_widgets, minimal_dashboard, settings_dialog
+    from . import statistics_widget, daily_widgets, minimal_dashboard, settings_dialog, weekly_recap
     from .gamification import GamificationManager, CMD_RESET_DATA, CMD_CLAIM_CHALLENGE, CMD_LP_START_PREFIX, CMD_LP_PAUSE_PREFIX
     from .sidebar import GamificationSidebar
     from .learning_plan import LearningPlanManager
@@ -131,6 +131,7 @@ def get_default_settings() -> Dict[str, Any]:
         "minimal_dashboard_enabled": False,
         "gamification_widgets_enabled": True, "daily_widgets_enabled": True, 
         "deadline_bar_enabled": True, "statistics_widget_enabled": True,
+        "weekly_recap_enabled": True,
         "deck_overview_enabled": True,
         "pomodoro_enabled": True, "ai_assistant_enabled": True,
         "website_viewer_enabled": True, "notebook_enabled": True,
@@ -1413,13 +1414,26 @@ def render_all_deck_browser_widgets(deck_browser: DeckBrowser, content: DeckBrow
     except Exception as e:
         log.error(f"SynapsePro: celebration popup error: {e}")
 
+    # Weekly recap — a once-a-week "last week vs. the week before" summary.
+    # Computed at most once per week (weekly_recap.get_pending_recap() caches
+    # the result to disk) and stays visible until dismissed or a new week
+    # begins, independent of the individual widget toggles above.
+    recap_html = ""
+    try:
+        if addon_settings.get("weekly_recap_enabled", True):
+            recap_data = weekly_recap.get_pending_recap()
+            if recap_data:
+                recap_html = weekly_recap.render_recap_card_html(recap_data)
+    except Exception as e:
+        log.error(f"SynapsePro: weekly recap render error: {e}")
+
     # Stats panel first, then the widgets panel, then Anki's own deck list —
     # both injected sections live in content.tree since Anki renders that
     # near the top of the page and content.stats near the bottom.
     content.stats = celebrate_html + getattr(content, 'stats', '')
     content.tree = (
         compact_stats_html + stats_html
-        + compact_html + widgets_panel_html + deadline_html
+        + compact_html + widgets_panel_html + deadline_html + recap_html
         + getattr(content, 'tree', '')
     )
 
@@ -1692,6 +1706,16 @@ def webview_did_receive_js_message(handled: bool, message: str, context: object)
                 save_addon_settings()
         except Exception as e:
             log.error(f"SynapsePro: weekly goal dialog error: {e}")
+        if mw.state == "deckBrowser":
+            mw.deckBrowser.refresh()
+        return (True, None)
+    # "✕" on the weekly recap card — hides it until next week's recap.
+    if cmd.startswith("synapsepro:weekly_recap_dismiss"):
+        week_key = cmd.split(":", 2)[2] if cmd.count(":") >= 2 else ""
+        try:
+            weekly_recap.dismiss_recap(week_key)
+        except Exception as e:
+            log.error(f"SynapsePro: weekly recap dismiss error: {e}")
         if mw.state == "deckBrowser":
             mw.deckBrowser.refresh()
         return (True, None)
